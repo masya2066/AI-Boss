@@ -1,0 +1,28 @@
+# DevPilot developing DevPilot (dogfooding). Protected: agents cannot edit this file.
+project:
+  id: ai-boss
+  default_branch: main
+execution:
+  agent_sandbox: true
+agents:
+  auth: subscription
+  effort: high
+commands:
+  setup: npm ci --no-audit --no-fund
+  typecheck: npm run typecheck
+  unit_tests: npm test
+  security_scan: npm audit --audit-level=high
+quality:
+  lint: off              # no linter configured in this repo yet
+  e2e_tests: off         # no UI
+  integration_tests: off # covered by unit_tests (PostgreSQL/Redis tests run in CI)
+limits:
+  max_repair_attempts: 3
+  max_task_cost_usd: 15
+  max_duration_minutes: 120
+  gate_timeout_seconds: 600
+delivery:
+  create_pr: true
+  require_ci: true
+  ci_poll_seconds: 30
+  ci_timeout_minutes: 30

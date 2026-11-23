@@ -1,0 +1,56 @@
+# Put this file at <your-repo>/devpilot.yaml (or pass --policy).
+project:
+  id: playgate
+  default_branch: main
+
+execution:
+  containerized: false        # true: gate commands run in throwaway Docker containers
+  container_image: node:24-bookworm
+  container_network: none
+  agent_sandbox: true         # Claude Code OS sandbox for agent Bash commands
+  env_passthrough: []         # env vars agents/gates may see (everything else is scrubbed)
+
+limits:
+  max_repair_attempts: 5
+  max_same_failure: 3
+  max_no_progress_attempts: 3
+  max_task_cost_usd: 20
+  max_duration_minutes: 90
+
+agents:
+  auth: subscription         # your Claude Pro/Max login via `claude -p`; `api` = Agent SDK + ANTHROPIC_API_KEY
+  wait_on_rate_limit: true   # pause until the usage window resets instead of failing
+  model: claude-opus-5-5
+  effort: high
+  models: {}                  # per-role override, e.g. { researcher: claude-sonnet-5-5 }
+
+commands:
+  setup: npm ci
+  typecheck: npx tsc --noEmit
+  lint: npm run lint
+  unit_tests: npm test
+  integration_tests: npm run test:integration
+  e2e_tests: npx playwright test
+  security_scan: npm audit --audit-level=high
+  # requirement_tests: npx vitest run {files}
+
+quality:
+  typecheck: required
+  lint: required
+  unit_tests: required
+  integration_tests: { mode: conditional, when: { paths: ['src/server/**', 'prisma/**'] } }
+  e2e_tests: { mode: conditional, when: { paths: ['src/app/**', '**/*.tsx'] }, collect: [playwright-report, test-results] }
+  security_scan: required
+  independent_review: required
+
+approval:
+  spec: auto
+  high_risk_changes: required
+  before_pr: auto
+
+delivery:
+  create_pr: true
+  push: true
+  remote: origin
+  auto_merge: false
+  require_ci: true

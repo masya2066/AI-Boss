@@ -1,0 +1,62 @@
+# Global tool permissions per agent role. Enforced by the PreToolUse hook in
+# the agent runtime. Projects cannot relax these. The hook is defence in depth:
+# the hard boundary is the worktree + OS sandbox / container.
+roles:
+  researcher: { tools: [Read, Glob, Grep, Bash], write: none, bash: readonly }
+  architect:  { tools: [Read, Glob, Grep, Bash], write: none, bash: readonly }
+  reviewer:   { tools: [Read, Glob, Grep, Bash], write: none, bash: readonly }
+  qa:         { tools: [Read, Glob, Grep, Bash, Write, Edit, MultiEdit], write: tests, bash: full }
+  developer:  { tools: [Read, Glob, Grep, Bash, Write, Edit, MultiEdit, NotebookEdit, TodoWrite], write: worktree, bash: full }
+  fixer:      { tools: [Read, Glob, Grep, Bash, Write, Edit, MultiEdit, NotebookEdit, TodoWrite], write: worktree, bash: full }
+
+# Agents are orchestrated by DevPilot, not by each other.
+forbidden_tools: [Task, Agent, KillShell, ExitPlanMode, EnterWorktree, ExitWorktree, CronCreate, RemoteTrigger]
+
+bash:
+  # Regexes, case-insensitive. Checked for every role.
+  deny:
+    - '\bgit\s+push\b'
+    - '\bgit\s+(remote|config|worktree|filter-branch|update-ref)\b'
+    - '\bgit\s+(checkout|switch)\s+(-b\s+)?(main|master|develop|release)\b'
+    - '\bgit\s+reset\s+--hard\s+(origin|HEAD~)'
+    - '\bgit\s+commit\b.*--no-verify'
+    - '\bgh\s+'
+    - '\bsudo\b'
+    - '\b(ssh|scp|sftp|rsync)\b'
+    - '\b(docker|podman|kubectl|helm|terraform)\b'
+    - '(curl|wget)[^|]*\|\s*(ba|z)?sh'
+    - '\brm\s+-[a-z]*r[a-z]*f?\s+(/|~|\$HOME)(\s|$)'
+    - '\bchmod\s+(-R\s+)?777\b'
+    - '\b(printenv|env)\s*$'
+    - '/\.ssh/|/\.aws/|/\.config/gh|\.netrc|\.npmrc'
+    - '\bnpm\s+publish\b'
+    - '\b(psql|mysql|mongo|redis-cli)\b.*(prod|production)'
+  # Prefixes allowed for read-only roles (researcher, architect, reviewer).
+  readonly_allow:
+    - ls
+    - cat
+    - head
+    - tail
+    - wc
+    - find
+    - grep
+    - rg
+    - tree
+    - file
+    - stat
+    - pwd
+    - echo
+    - sort
+    - uniq
+    - cut
+    - jq
+    - git log
+    - git show
+    - git diff
+    - git status
+    - git blame
+    - git ls-files
+    - git grep
+    - git rev-parse
+    - node -v
+    - npm ls

@@ -1,0 +1,17 @@
+limits:
+  max_repair_attempts: 5
+  max_same_failure: 3
+  max_no_progress_attempts: 3
+  max_task_cost_usd: 20
+  max_duration_minutes: 90
+  gate_timeout_seconds: 900
+agents:
+  model: claude-opus-5-5
+  effort: high
+  max_turns:
+    researcher: 40
+    architect: 30
+    developer: 120
+    qa: 80
+    reviewer: 40
+    fixer: 80

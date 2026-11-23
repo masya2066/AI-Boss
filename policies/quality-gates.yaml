@@ -1,0 +1,21 @@
+# Default quality gates. Project devpilot.yaml overrides any entry.
+#   required    - must pass; missing command => NOT_VERIFIED => delivery blocked
+#   conditional - becomes required when changed files match `when.paths`
+#   off         - not evaluated
+quality:
+  diff_present: required
+  test_integrity: required
+  secrets_scan: required
+  typecheck: required
+  lint: required
+  unit_tests: required
+  build: off
+  integration_tests:
+    mode: conditional
+    when: { paths: ['**/api/**', '**/server/**', '**/db/**', '**/migrations/**', '**/*.sql'] }
+  e2e_tests:
+    mode: conditional
+    when: { paths: ['**/*.tsx', '**/*.jsx', '**/*.vue', '**/*.svelte', '**/pages/**', '**/app/**'] }
+  security_scan: required
+  requirements_coverage: required
+  independent_review: required

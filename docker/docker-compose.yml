@@ -1,0 +1,59 @@
+# Infrastructure for server mode: PostgreSQL (source of truth) + Redis (queue).
+# Optional `worker` / `api` services run DevPilot itself in containers.
+name: devpilot
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: devpilot
+      POSTGRES_PASSWORD: devpilot
+      POSTGRES_DB: devpilot
+    ports: ["127.0.0.1:${DEVPILOT_PG_PORT:-5432}:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devpilot"]
+      interval: 2s
+      retries: 30
+  redis:
+    image: redis:7-alpine
+    ports: ["127.0.0.1:${DEVPILOT_REDIS_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  # Containerised worker: the agent only sees /data (worktrees) and its own
+  # credentials. No Docker socket is mounted on purpose.
+  worker:
+    profiles: [app]
+    build: { context: .., dockerfile: docker/Dockerfile }
+    command: ["npx", "tsx", "apps/worker/src/main.ts"]
+    environment:
+      DATABASE_URL: postgres://devpilot:devpilot@postgres:5432/devpilot
+      REDIS_URL: redis://redis:6379
+      DEVPILOT_DATA_DIR: /data
+      # Subscription: token from `claude setup-token`. API mode: set ANTHROPIC_API_KEY and agents.auth: api.
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
+      GH_TOKEN: ${GH_TOKEN:-}
+    volumes:
+      - devpilot-data:/data
+      - ${DEVPILOT_REPOS:-../.repos}:/repos
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+  api:
+    profiles: [app]
+    build: { context: .., dockerfile: docker/Dockerfile }
+    command: ["npx", "tsx", "apps/api/src/main.ts"]
+    environment:
+      DATABASE_URL: postgres://devpilot:devpilot@postgres:5432/devpilot
+      REDIS_URL: redis://redis:6379
+      DEVPILOT_DATA_DIR: /data
+      HOST: 0.0.0.0
+      DEVPILOT_API_TOKEN: ${DEVPILOT_API_TOKEN:-}
+    ports: ["127.0.0.1:4317:4317"]
+    volumes:
+      - devpilot-data:/data
+      - ${DEVPILOT_REPOS:-../.repos}:/repos
+    depends_on: { postgres: { condition: service_healthy }, redis: { condition: service_healthy } }
+volumes:
+  pgdata:
+  devpilot-data:

@@ -1,0 +1,37 @@
+{
+  "name": "devpilot",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test 'tests/**/*.test.ts'",
+    "api": "tsx apps/api/src/main.ts",
+    "worker": "tsx apps/worker/src/main.ts",
+    "cli": "tsx apps/cli/src/main.ts",
+    "db:migrate": "tsx packages/database/src/migrate.ts",
+    "infra:up": "docker compose -f docker/docker-compose.yml up -d",
+    "infra:down": "docker compose -f docker/docker-compose.yml down"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.330",
+    "bullmq": "^6.7.8",
+    "fastify": "^5.12.8",
+    "ioredis": "^6.1.0",
+    "pg": "^8.23.1",
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
+  }
+}

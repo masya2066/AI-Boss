@@ -1,0 +1,5 @@
+node_modules
+.devpilot
+**/.devpilot
+*.log
+.git
