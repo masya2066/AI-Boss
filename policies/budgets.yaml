@@ -8,6 +8,10 @@ limits:
 agents:
   model: claude-opus-5-5
   effort: high
+  # Reviewer: Sonnet + calibrated severity. Measured on seeded-bug diffs (scripts/review-eval.ts):
+  # same catch rate as Opus (6/6), no false blocks on clean code, ~3x cheaper and ~4x faster.
+  models: { reviewer: claude-sonnet-5-5 }
+  efforts: { reviewer: medium }
   max_turns:
     researcher: 40
     architect: 30

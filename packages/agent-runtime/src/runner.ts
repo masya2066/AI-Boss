@@ -16,6 +16,24 @@ export interface AgentRequest<T> {
   /** Called as soon as the SDK reports a session id, so it can be persisted before the run ends. */
   onSession?: (sessionId: string) => void | Promise<void>;
   onToolDenied?: (tool: string, reason: string) => void;
+  /** Every tool call the agent makes, as it happens (live view). */
+  onActivity?: (a: AgentActivity) => void;
+  /** Where the runner records the agent's OS process id while it runs (crash recovery). */
+  pidFile?: string;
+}
+
+export interface AgentActivity {
+  tool: string;
+  /** File, command or pattern the tool acts on (shortened). */
+  target?: string;
+}
+
+/** Short, human-readable target of a tool call: the file, command or search pattern. */
+export function activityOf(name: string, input: any): AgentActivity {
+  const i = input ?? {};
+  const raw = i.file_path ?? i.notebook_path ?? i.path ?? i.command ?? i.pattern ?? i.url ?? i.query ?? i.description;
+  const target = typeof raw === 'string' ? raw.replace(/\s+/g, ' ').slice(0, 140) : undefined;
+  return { tool: name, target };
 }
 
 export interface AgentResult<T> {
@@ -44,10 +62,10 @@ export type ScriptedHandler = (req: AgentRequest<unknown>) => unknown | Promise<
 
 /** Deterministic runner for tests and dry runs. Handlers may edit files in req.cwd. */
 export class ScriptedAgentRunner implements AgentRunner {
-  readonly calls: { role: AgentRole; prompt: string }[] = [];
+  readonly calls: { role: AgentRole; prompt: string; resumeSessionId?: string }[] = [];
   constructor(private readonly handlers: Partial<Record<AgentRole, ScriptedHandler>>) {}
   async run<T>(req: AgentRequest<T>): Promise<AgentResult<T>> {
-    this.calls.push({ role: req.role, prompt: req.prompt });
+    this.calls.push({ role: req.role, prompt: req.prompt, resumeSessionId: req.resumeSessionId });
     const h = this.handlers[req.role];
     if (!h) return { ok: false, text: '', costUsd: 0, numTurns: 0, subtype: 'error', toolCalls: 0, denied: [], error: `no scripted handler for ${req.role}` };
     try {

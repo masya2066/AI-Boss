@@ -31,8 +31,8 @@ test('container gate: no network, no host env secrets, files owned by host user'
 
 test('full task with every gate executed inside throwaway containers + evidence collected', { skip, timeout: 180_000 }, async () => {
   const policy = POLICY.replace(
-    'execution: { agent_sandbox: false }',
-    `execution: { agent_sandbox: false, containerized: true, container_image: '${IMAGE}', container_network: none }`,
+    'execution: { agent_sandbox: false, mode: pipeline }',
+    `execution: { agent_sandbox: false, mode: pipeline, containerized: true, container_image: '${IMAGE}', container_network: none }`,
   )
     .replace(`  unit_tests: "node --test 'tests/**/*.test.js'"`, `  unit_tests: "mkdir -p test-results && node --test --test-reporter=spec --test-reporter-destination=test-results/unit.txt 'tests/**/*.test.js'"`)
     .replace('quality:\n', 'quality:\n  unit_tests: { mode: required, collect: [test-results] }\n');

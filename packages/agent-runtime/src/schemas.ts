@@ -27,9 +27,28 @@ export const SpecOutput = z.object({
       }),
     )
     .min(1),
-  ambiguities: z.array(z.object({ question: z.string(), blocking: z.boolean() })),
+  ambiguities: z.array(
+    z.object({
+      question: z.string(),
+      blocking: z.boolean(),
+      proposedDefault: z.string().default('').describe('The answer you would choose if nobody answers, and why'),
+    }),
+  ),
   assumptions: z.array(z.string()),
 });
+
+const SubtaskPlan = z
+  .array(
+    z.object({
+      key: z.string().describe('Short id: S1, S2, …'),
+      title: z.string(),
+      description: z.string().describe('What exactly to implement in this part, self-contained'),
+      requirementIds: z.array(z.string()),
+      files: z.array(z.string()).describe('Files this part is expected to change'),
+      dependsOn: z.array(z.string()).describe('Keys of subtasks that must be integrated first'),
+    }),
+  )
+  .default([]);
 
 export const ImpactOutput = z.object({
   summary: z.string(),
@@ -40,25 +59,40 @@ export const ImpactOutput = z.object({
   touchesDatabase: z.boolean(),
   touchesAuth: z.boolean(),
   touchesPublicApi: z.boolean(),
-  subtasks: z
-    .array(
-      z.object({
-        key: z.string().describe('Short id: S1, S2, …'),
-        title: z.string(),
-        description: z.string().describe('What exactly to implement in this part, self-contained'),
-        requirementIds: z.array(z.string()),
-        files: z.array(z.string()).describe('Files this part is expected to change'),
-        dependsOn: z.array(z.string()).describe('Keys of subtasks that must be integrated first'),
-      }),
-    )
-    .default([])
-    .describe('Leave EMPTY unless the change is large and splits into parts that can be implemented and tested independently'),
+  subtasks: SubtaskPlan.describe(
+    'Parts that separate agents can implement and test independently (2-8), or empty when the change is one coherent unit',
+  ),
+});
+
+/** Second look at a large change the architect did not split. */
+export const SplitOutput = z.object({
+  subtasks: SubtaskPlan,
+  reason: z.string().describe('Why this split (or why the change cannot be split)'),
 });
 
 export const DeveloperOutput = z.object({
   summary: z.string(),
   filesChanged: z.array(z.string()),
   notes: z.array(z.string()),
+});
+
+/** Solo: one session implements and tests the change, and says what it implemented. */
+export const SoloOutput = z.object({
+  title: z.string().describe('Short title of the change'),
+  summary: z.string(),
+  requirements: z
+    .array(
+      z.object({
+        id: z.string().describe('REQ-01, REQ-02, ...'),
+        description: z.string(),
+        acceptanceCriteria: z.array(z.string()),
+        testFiles: z.array(z.string()).describe('Repo-relative test files that prove this requirement'),
+      }),
+    )
+    .min(1)
+    .describe('Every behaviour the request asks for, each mapped to the tests that prove it'),
+  assumptions: z.array(z.string()).default([]),
+  filesChanged: z.array(z.string()).default([]),
 });
 
 export const QaOutput = z.object({
@@ -89,6 +123,10 @@ export const IntegratorOutput = z.object({
 export const FixerOutput = z.object({
   summary: z.string(),
   defectsAddressed: z.array(z.string()).describe('Defect IDs you attempted to fix'),
+  requirementTests: z
+    .array(z.object({ requirementId: z.string(), testFiles: z.array(z.string()) }))
+    .default([])
+    .describe('Tests that prove a requirement (new or already existing), e.g. to fix requirements_coverage'),
 });
 
 export type DiscoveryOutput = z.infer<typeof DiscoveryOutput>;
@@ -98,6 +136,7 @@ export type DeveloperOutput = z.infer<typeof DeveloperOutput>;
 export type QaOutput = z.infer<typeof QaOutput>;
 export type ReviewOutput = z.infer<typeof ReviewOutput>;
 export type FixerOutput = z.infer<typeof FixerOutput>;
+export type SoloOutput = z.infer<typeof SoloOutput>;
 export type IntegratorOutput = z.infer<typeof IntegratorOutput>;
 
 /** JSON Schema for Claude Code structured output (without the `$schema` meta key it rejects). */

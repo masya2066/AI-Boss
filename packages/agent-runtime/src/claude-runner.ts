@@ -4,7 +4,7 @@ import { query, type HookCallback, type Options, type SDKMessage } from '@anthro
 import { checkToolUse, type LoadedPolicy } from '@devpilot/policy-engine';
 import { scrubbedEnv } from '@devpilot/sandbox-manager';
 import type { AgentRole } from '@devpilot/shared';
-import type { AgentRequest, AgentResult, AgentRunner } from './runner';
+import { activityOf, type AgentRequest, type AgentResult, type AgentRunner } from './runner';
 import { toOutputSchema } from './schemas';
 
 const AUTH_ENV = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'AWS_REGION', 'AWS_PROFILE'];
@@ -98,7 +98,11 @@ export class ClaudeAgentRunner implements AgentRunner {
           await req.onSession?.(sessionId);
         }
         if (msg.type === 'assistant') {
-          for (const block of msg.message.content) if (block.type === 'tool_use') toolCalls++;
+          for (const block of msg.message.content)
+            if (block.type === 'tool_use') {
+              toolCalls++;
+              if (block.name !== 'StructuredOutput') req.onActivity?.(activityOf(block.name, block.input));
+            }
         }
         if (msg.type === 'result') {
           costUsd = msg.total_cost_usd;

@@ -33,9 +33,22 @@ quality:
   security_scan: off
   e2e_tests: off
   integration_tests: off
-limits: { max_repair_attempts: 3, max_task_cost_usd: 10, gate_timeout_seconds: 120 }
+limits: { max_repair_attempts: 3, max_task_cost_usd: 30, gate_timeout_seconds: 120 }
+# Benchmarks measure autonomy: nobody answers questions or approves plans.
+approval: { ambiguities: assume, high_risk_changes: auto }
 delivery: { create_pr: false }
 `;
+
+function merge(a: any, b: any): any {
+  if (typeof a !== 'object' || a === null || Array.isArray(a) || typeof b !== 'object' || b === null || Array.isArray(b)) return b ?? a;
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = merge(a[k], v);
+  return out;
+}
+/** Benchmark default policy with the benchmark's own overrides merged in (as data, not text). */
+export function benchPolicy(b: Pick<Benchmark, 'policy'>): string {
+  return YAML.stringify(merge(YAML.parse(BENCH_POLICY), b.policy ? YAML.parse(b.policy) : {}));
+}
 
 export function loadBenchmarks(root: string, only?: string[]): Benchmark[] {
   return readdirSync(root)
@@ -77,6 +90,8 @@ export function claudeBaseline(o: { model?: string; claudeBin?: string } = {}): 
 export interface BenchResult {
   benchmark: string;
   mode: 'devpilot' | 'baseline';
+  trial?: number;
+  subtasks?: number;
   accepted: boolean;
   passed: number;
   failed: number;
@@ -118,39 +133,68 @@ export async function runBenchmarks(o: {
   policiesDir?: string;
   /** Answer approval requests automatically (benchmarks measure autonomy; answers are logged). */
   autoApprove?: string;
+  /** Independent repetitions of every (benchmark, mode): one run proves little. */
+  trials?: number;
+  /** How many runs go at once (all share one subscription limit). */
+  concurrency?: number;
+  /** Shared orchestrator, so DevPilot runs show up in the live dashboard of the calling process. */
+  orchestrator?: Orchestrator;
   log?: (l: string) => void;
 }): Promise<{ results: BenchResult[]; reportPath: string }> {
   const log = o.log ?? (() => {});
-  const results: BenchResult[] = [];
-  for (const b of o.benchmarks) {
-    for (const mode of o.modes) {
-      const root = mkdtempSync(join(tmpdir(), `bench-${b.name}-${mode}-`));
-      const repo = freshRepo(b, root);
-      const t0 = Date.now();
-      log(`[bench] ${b.name} / ${mode}`);
-      if (mode === 'baseline') {
-        const r = await o.baseline({ cwd: repo, prompt: b.prompt, timeoutMs: 30 * 60_000 });
-        const j = await judge(b, repo);
-        results.push({ benchmark: b.name, mode, accepted: j.accepted, passed: j.passed, failed: j.failed, costUsd: r.costUsd, minutes: (Date.now() - t0) / 60000, error: r.error, acceptanceLog: j.log });
-        continue;
-      }
-      const policyPath = join(root, 'devpilot.yaml');
-      writeFileSync(policyPath, BENCH_POLICY + (b.policy ?? ''));
+  const jobs: { b: Benchmark; mode: 'devpilot' | 'baseline'; trial: number }[] = [];
+  for (let trial = 1; trial <= (o.trials ?? 1); trial++) for (const b of o.benchmarks) for (const mode of o.modes) jobs.push({ b, mode, trial });
+  const stamp = Date.now().toString(36);
+
+  const one = async ({ b, mode, trial }: (typeof jobs)[number]): Promise<BenchResult> => {
+    const root = mkdtempSync(join(tmpdir(), `bench-${b.name}-${mode}-`));
+    const repo = freshRepo(b, root);
+    const t0 = Date.now();
+    log(`[bench] ${b.name} / ${mode} #${trial} start`);
+    if (mode === 'baseline') {
+      const r = await o.baseline({ cwd: repo, prompt: b.prompt, timeoutMs: 60 * 60_000 });
+      const j = await judge(b, repo);
+      log(`[bench] ${b.name} / baseline #${trial}: hidden ${j.passed}/${j.passed + j.failed}`);
+      return { benchmark: b.name, mode, trial, accepted: j.accepted, passed: j.passed, failed: j.failed, costUsd: r.costUsd, minutes: (Date.now() - t0) / 60000, error: r.error, acceptanceLog: j.log };
+    }
+    const policyPath = join(root, 'devpilot.yaml');
+    writeFileSync(policyPath, benchPolicy(b));
+    let orch = o.orchestrator;
+    if (!orch) {
       const store = new MemoryStore(join(root, 'state.json'));
       await store.init();
-      const orch = new Orchestrator({ store, runner: o.runner, dataDir: join(root, 'data'), policiesDir: o.policiesDir, workerId: 'bench', log });
-      await orch.registerProject({ id: b.name, repoPath: repo, policyPath });
-      let t = await orch.run((await orch.createTask({ projectId: b.name, prompt: b.prompt })).id, { waitOnPause: true });
-      for (let i = 0; i < 3 && t.state === 'AWAITING_APPROVAL' && o.autoApprove; i++) {
-        log(`[bench] auto-approving ${t.approval?.kind}: ${t.approval?.questions.join(' / ')}`);
-        await orch.approve(t.id, o.autoApprove);
-        t = await orch.run(t.id, { waitOnPause: true });
-      }
-      const checkout = t.worktreePath ?? repo;
-      const j = await judge(b, checkout);
-      results.push({ benchmark: b.name, mode, accepted: j.accepted, passed: j.passed, failed: j.failed, costUsd: t.costUsd, minutes: (Date.now() - t0) / 60000, taskState: t.state, repairs: t.repairAttempts, humanInput: t.humanInput.length, error: t.stopReason, acceptanceLog: j.log });
+      orch = new Orchestrator({ store, runner: o.runner, dataDir: join(root, 'data'), policiesDir: o.policiesDir, workerId: `bench-${trial}`, log });
     }
-  }
+    const projectId = `bench-${b.name}-${stamp}-${trial}`;
+    await orch.registerProject({ id: projectId, repoPath: repo, policyPath });
+    let t = await orch.run((await orch.createTask({ projectId, prompt: b.prompt, title: `[bench #${trial}] ${b.name}` })).id, { waitOnPause: true });
+    for (let i = 0; i < 3 && t.state === 'AWAITING_APPROVAL' && o.autoApprove; i++) {
+      log(`[bench] auto-approving ${t.approval?.kind}: ${t.approval?.questions.join(' / ')}`);
+      await orch.approve(t.id, o.autoApprove);
+      t = await orch.run(t.id, { waitOnPause: true });
+    }
+    const children = await Promise.all((t.subtasks ?? []).map((s) => (s.taskId ? orch!.store.getTask(s.taskId) : undefined)));
+    const cost = t.costUsd + children.reduce((a, c) => a + (c?.costUsd ?? 0), 0);
+    const checkout = t.worktreePath ?? repo;
+    const j = await judge(b, checkout);
+    log(`[bench] ${b.name} / devpilot #${trial}: ${t.state}, hidden ${j.passed}/${j.passed + j.failed}`);
+    return { benchmark: b.name, mode, trial, accepted: j.accepted, passed: j.passed, failed: j.failed, costUsd: cost, minutes: (Date.now() - t0) / 60000, taskState: t.state, repairs: t.repairAttempts, subtasks: t.subtasks?.length ?? 0, humanInput: t.humanInput.length, error: t.stopReason, acceptanceLog: j.log };
+  };
+
+  const results: BenchResult[] = new Array(jobs.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(o.concurrency ?? 1, jobs.length)) }, async () => {
+    while (next < jobs.length) {
+      const i = next++;
+      try {
+        results[i] = await one(jobs[i]!);
+      } catch (e) {
+        const { b, mode, trial } = jobs[i]!;
+        results[i] = { benchmark: b.name, mode, trial, accepted: false, passed: 0, failed: 0, costUsd: 0, minutes: 0, error: `harness error: ${(e as Error).message}`, acceptanceLog: '' };
+      }
+    }
+  });
+  await Promise.all(workers);
   mkdirSync(o.outDir, { recursive: true });
   const reportPath = join(o.outDir, `bench-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
   writeFileSync(reportPath, renderBench(results));
@@ -159,16 +203,22 @@ export async function runBenchmarks(o: {
 }
 
 export function renderBench(results: BenchResult[]): string {
-  const L = ['# DevPilot vs plain Claude Code', '', 'Same prompt, same repo, judged by the same hidden acceptance tests.', ''];
-  L.push('| Benchmark | Mode | Accepted | Hidden tests | DevPilot state | Repairs | Cost | Minutes |', '|---|---|---|---|---|---|---|---|');
-  for (const r of results) L.push(`| ${r.benchmark} | ${r.mode} | ${r.accepted ? '✅' : '❌'} | ${r.passed}/${r.passed + r.failed} | ${r.taskState ?? '-'} | ${r.repairs ?? '-'} | $${r.costUsd.toFixed(2)} | ${r.minutes.toFixed(1)} |`);
+  const L = ['# DevPilot vs plain Claude Code', '', 'Same prompt, same repo, judged by the same hidden acceptance tests (copied in only after the run).', ''];
+  L.push('| Benchmark | Mode | # | Accepted | Hidden tests | DevPilot state | Subtasks | Repairs | Cost | Minutes |', '|---|---|---|---|---|---|---|---|---|---|');
+  for (const r of results)
+    L.push(`| ${r.benchmark} | ${r.mode} | ${r.trial ?? 1} | ${r.accepted ? '✅' : '❌'} | ${r.passed}/${r.passed + r.failed} | ${r.taskState ?? '-'} | ${r.subtasks ?? '-'} | ${r.repairs ?? '-'} | $${r.costUsd.toFixed(2)} | ${r.minutes.toFixed(1)} |`);
   L.push('');
   for (const mode of ['devpilot', 'baseline'] as const) {
     const rs = results.filter((r) => r.mode === mode);
     if (!rs.length) continue;
     const acc = rs.filter((r) => r.accepted);
     const cost = rs.reduce((s, r) => s + r.costUsd, 0);
-    L.push(`- **${mode}**: accepted ${acc.length}/${rs.length}, cost per accepted task ${acc.length ? `$${(cost / acc.length).toFixed(2)}` : '—'}, total $${cost.toFixed(2)}`);
+    const tests = rs.reduce((s, r) => s + r.passed, 0);
+    const total = rs.reduce((s, r) => s + r.passed + r.failed, 0);
+    const mins = rs.reduce((s, r) => s + r.minutes, 0) / rs.length;
+    L.push(
+      `- **${mode}**: accepted ${acc.length}/${rs.length}, hidden tests ${tests}/${total} (${total ? Math.round((100 * tests) / total) : 0}%), avg ${mins.toFixed(1)} min, cost per accepted task ${acc.length ? `$${(cost / acc.length).toFixed(2)}` : '—'}, total $${cost.toFixed(2)}`,
+    );
   }
   return L.join('\n');
 }

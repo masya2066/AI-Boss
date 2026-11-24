@@ -48,7 +48,7 @@ test('metrics: first-pass, autonomy, coverage, cost per accepted task, recurring
 });
 
 test('model routing by complexity: small tasks use the small tier, judgement roles stay on top, fixer escalates', async () => {
-  const policy = POLICY.replace('execution: { agent_sandbox: false }', 'execution: { agent_sandbox: false }\nagents: { routing: { enabled: true, escalate_fixer_after: 1 } }');
+  const policy = POLICY.replace('execution: { agent_sandbox: false, mode: pipeline }', 'execution: { agent_sandbox: false, mode: pipeline }\nagents: { routing: { enabled: true, escalate_fixer_after: 1 } }');
   let attempts = 0;
   const e = await setup(
     baseHandlers({
@@ -65,7 +65,8 @@ test('model routing by complexity: small tasks use the small tier, judgement rol
   assert.equal(model('researcher'), 'claude-opus-5-5', 'before impact analysis: default model');
   assert.equal(model('developer'), 'claude-sonnet-5-5');
   assert.equal(model('qa'), 'claude-sonnet-5-5');
-  assert.equal(model('reviewer'), 'claude-opus-5-5', 'reviewer is a top-tier role');
+  assert.equal(model('reviewer'), 'claude-sonnet-5-5', 'an explicit per-role model (default: measured Sonnet reviewer) wins over routing');
+  assert.equal(model('architect', 1), 'claude-opus-5-5', 'architect stays on the top tier after impact analysis');
   assert.equal(model('fixer', 0), 'claude-sonnet-5-5');
   assert.equal(model('fixer', 1), 'claude-opus-5-5', 'fixer escalated after a failed repair');
 });
@@ -245,7 +246,12 @@ export function cancelBooking(b, now = new Date()) {
       req.prompt.includes(': specification')
         ? { title: 'cancel window', requirements: [{ id: 'REQ-01', description: 'cancel window', acceptanceCriteria: ['<12h throws'] }], ambiguities: [], assumptions: [] }
         : { summary: 's', filesToChange: ['src/booking.js'], modules: [], risks: [], plan: ['p'], touchesDatabase: false, touchesAuth: false, touchesPublicApi: false },
-    developer: (req) => (writeFileSync(join(req.cwd, 'src/booking.js'), correct), { summary: 'done', filesChanged: [], notes: [] }),
+    // benchmarks run DevPilot in its default (solo) mode: one session writes code + tests
+    developer: (req) => (
+      writeFileSync(join(req.cwd, 'src/booking.js'), correct),
+      writeFileSync(join(req.cwd, 'tests/window.test.js'), "import test from 'node:test';\nimport assert from 'node:assert';\nimport { cancelBooking, createBooking, CancelWindowError } from '../src/booking.js';\ntest('w', () => assert.throws(() => cancelBooking(createBooking('x', new Date(Date.now() + 3600_000))), CancelWindowError));\n"),
+      { title: 'cancel window', summary: 'done', requirements: [{ id: 'REQ-01', description: 'cancel window', acceptanceCriteria: ['<12h throws'], testFiles: ['tests/window.test.js'] }] }
+    ),
     qa: (req) => (writeFileSync(join(req.cwd, 'tests/window.test.js'), "import test from 'node:test';\nimport assert from 'node:assert';\nimport { cancelBooking, createBooking, CancelWindowError } from '../src/booking.js';\ntest('w', () => assert.throws(() => cancelBooking(createBooking('x', new Date(Date.now() + 3600_000))), CancelWindowError));\n"), { testFiles: ['tests/window.test.js'], requirementTests: [{ requirementId: 'REQ-01', testFiles: ['tests/window.test.js'] }], notes: [] }),
     reviewer: () => ({ findings: [], unmetRequirements: [] }),
     fixer: () => ({ summary: 'n', defectsAddressed: [] }),
@@ -253,7 +259,19 @@ export function cancelBooking(b, now = new Date()) {
   // "Plain" baseline that forgets one rule (no AlreadyCancelledError) — like a single unchecked session might.
   const baseline = async ({ cwd }: { cwd: string }) => (writeFileSync(join(cwd, 'src/booking.js'), correct.replace("if (b.status === 'cancelled') throw new AlreadyCancelledError(b.id);\n", '')), { costUsd: 0.3, ok: true });
   const root = join(import.meta.dirname, '..', 'benchmarks');
-  const { results, reportPath } = await runBenchmarks({ benchmarks: loadBenchmarks(root, ['cancel-window']), modes: ['devpilot', 'baseline'], runner, baseline, outDir: join(root, '..', '.devpilot', 'bench-test') });
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const countedBaseline = async (a: { cwd: string; prompt: string; timeoutMs: number }) => {
+    maxInFlight = Math.max(maxInFlight, ++inFlight);
+    await new Promise((r) => setTimeout(r, 150));
+    const r = await baseline(a);
+    inFlight--;
+    return r;
+  };
+  const { results, reportPath } = await runBenchmarks({ benchmarks: loadBenchmarks(root, ['cancel-window']), modes: ['devpilot', 'baseline'], trials: 2, concurrency: 4, runner, baseline: countedBaseline, outDir: join(root, '..', '.devpilot', 'bench-test') });
+  assert.equal(results.length, 4, '2 trials x 2 modes');
+  assert.ok(maxInFlight >= 2, 'baseline trials ran concurrently');
+  assert.deepEqual(results.map((r) => `${r.mode}#${r.trial}`), ['devpilot#1', 'baseline#1', 'devpilot#2', 'baseline#2']);
   const dp = results.find((r) => r.mode === 'devpilot')!;
   const bl = results.find((r) => r.mode === 'baseline')!;
   assert.equal(dp.accepted, true, dp.acceptanceLog);
@@ -262,5 +280,15 @@ export function cancelBooking(b, now = new Date()) {
   assert.equal(bl.accepted, false);
   assert.ok(bl.failed >= 1 && bl.passed >= 4);
   assert.ok(existsSync(reportPath));
-  assert.match(readFileSync(reportPath, 'utf8'), /devpilot\*\*: accepted 1\/1[\s\S]*baseline\*\*: accepted 0\/1/);
+  assert.match(readFileSync(reportPath, 'utf8'), /devpilot\*\*: accepted 2\/2, hidden tests 12\/12[\s\S]*baseline\*\*: accepted 0\/2/);
+});
+
+test('benchmark policy: overrides are merged as data, unattended approvals by default', async () => {
+  const { benchPolicy } = await import('@devpilot/benchmark');
+  const y = (await import('yaml')).default.parse(benchPolicy({ policy: 'commands:\n  lint: "npm run lint"\nquality:\n  lint: required\n' }));
+  assert.equal(y.commands.unit_tests, 'npm test', 'default kept');
+  assert.equal(y.commands.lint, 'npm run lint');
+  assert.equal(y.quality.lint, 'required');
+  assert.equal(y.quality.security_scan, 'off');
+  assert.deepEqual(y.approval, { ambiguities: 'assume', high_risk_changes: 'auto' });
 });

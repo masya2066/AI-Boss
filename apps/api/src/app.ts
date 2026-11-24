@@ -46,7 +46,8 @@ export function buildApi(o: ApiOptions): FastifyInstance {
   const serve = (file: string, reply: any) => {
     const p = normalize(join(DASHBOARD_DIR, file));
     if (!p.startsWith(DASHBOARD_DIR) || !existsSync(p)) return reply.code(404).send('not found');
-    return reply.type(MIME[extname(p)] ?? 'application/octet-stream').send(readFileSync(p));
+    // no-cache: after an update the browser revalidates instead of running a stale dashboard
+    return reply.header('cache-control', 'no-cache').type(MIME[extname(p)] ?? 'application/octet-stream').send(readFileSync(p));
   };
   app.get('/', async (_req, reply) => reply.redirect('/dashboard/'));
   app.get('/dashboard/', async (_req, reply) => serve('index.html', reply));
@@ -128,6 +129,39 @@ export function buildApi(o: ApiOptions): FastifyInstance {
   });
 
   // ------------------------------------------------------- live event stream
+  // Live view: what is running right now (active root tasks + the ones finished in the last
+  // 2 hours), their subtask graph, the agents at work and what each one is doing.
+  app.get('/live', async () => {
+    const all = await store.listTasks();
+    const recent = Date.now() - 2 * 3600_000;
+    const TERMINAL = ['DONE', 'FAILED', 'CANCELLED'];
+    const roots = all
+      .filter((t) => !t.parentId && (!TERMINAL.includes(t.state) || Date.parse(t.updatedAt) > recent))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, 10);
+    return {
+      now: new Date().toISOString(),
+      tasks: await Promise.all(
+        roots.map(async (task) => {
+          const children = all.filter((c) => c.parentId === task.id);
+          const ids = [task.id, ...children.map((c) => c.id)];
+          const runs = await store.listAgentRunsForTasks(ids);
+          const events = await store.listEventsForTasks(ids, ['agent_activity', 'state_changed', 'subtask_integrated', 'gates_evaluated', 'review_recorded', 'stale_agent_killed']);
+          const lastActivity: Record<string, unknown> = {};
+          for (const e of events) if (e.type === 'agent_activity') lastActivity[e.taskId] = { ...e.data, ts: e.ts };
+          return {
+            task,
+            children,
+            running: runs.filter((r) => r.status === 'running'),
+            agentRuns: runs.length,
+            lastActivity,
+            feed: events.slice(-60).reverse(),
+          };
+        }),
+      ),
+    };
+  });
+
   app.get('/events/stream', (req, reply) => {
     let after = Number((req.query as { after?: string }).after ?? 0);
     reply.raw.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });

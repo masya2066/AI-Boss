@@ -61,3 +61,45 @@ pre { padding: 12px; overflow: auto; max-height: 420px; white-space: pre-wrap; }
 .error { color: var(--bad); }
 dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text); max-width: 420px; }
 dialog menu { padding: 0; margin: 12px 0 0; display: flex; justify-content: flex-end; }
+
+/* ---- live view ---- */
+h3 { font-size: 13px; margin: 16px 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.livecard { margin-top: 16px; border-left: 4px solid var(--info); }
+.livecard.ok { border-left-color: var(--ok); } .livecard.bad { border-left-color: var(--bad); } .livecard.warn { border-left-color: var(--warn); } .livecard.idle { border-left-color: var(--idle); }
+.livecard .row a { color: var(--text); }
+.empty { color: var(--muted); }
+.track { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 12px 0; }
+.track span { font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--code); color: var(--muted); white-space: nowrap; }
+.track span.done { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.track span.now { background: var(--accent); color: #fff; }
+.track span.now.bad { background: var(--bad); } .track span.now.warn { background: var(--warn); } .track span.now.run { background: var(--info); }
+.track i { width: 10px; height: 1px; background: var(--line); }
+.dag { overflow-x: auto; margin: 8px 0 4px; padding-bottom: 4px; }
+.dag svg { display: block; max-width: none; }
+.dag .edge { fill: none; stroke: var(--line); stroke-width: 2; }
+.dag .edge.done { stroke: var(--ok); }
+.dag .arrowhead { fill: var(--muted); }
+.dag .node rect { fill: var(--panel); stroke: var(--line); stroke-width: 1.5; }
+.dag .node[data-href] { cursor: pointer; }
+.dag .node.ok rect { stroke: var(--ok); fill: color-mix(in srgb, var(--ok) 8%, var(--panel)); }
+.dag .node.bad rect { stroke: var(--bad); fill: color-mix(in srgb, var(--bad) 8%, var(--panel)); }
+.dag .node.warn rect { stroke: var(--warn); fill: color-mix(in srgb, var(--warn) 10%, var(--panel)); }
+.dag .node.run rect { stroke: var(--info); }
+.dag .node text { fill: var(--text); font-size: 12px; }
+.dag .node .t1 { font-weight: 650; } .dag .node .t2, .dag .node .t3 { fill: var(--muted); font-size: 11px; }
+.dag .pulse { fill: var(--info); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+@media (prefers-reduced-motion: reduce) { .dag .pulse { animation: none; } }
+.agents { list-style: none; margin: 0; padding: 0; }
+.agents li { padding: 8px 0; border-bottom: 1px dashed var(--line); overflow-wrap: anywhere; }
+.agents .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--info); margin-right: 6px; animation: pulse 1.2s ease-in-out infinite; }
+.feed { max-height: 360px; }
+.feed li.act { color: var(--muted); } .feed li.act b { color: var(--text); }
+@media (max-width: 600px) { main { padding: 16px; } .top { gap: 12px; padding: 10px 16px; } nav { gap: 10px; overflow-x: auto; } }
+
+/* ---- brain ---- */
+.brainwrap { padding: 0; overflow: hidden; margin-top: 8px; background: radial-gradient(circle at 50% 50%, color-mix(in srgb, var(--accent) 7%, var(--panel)) 0%, var(--panel) 70%); }
+#brain { display: block; width: 100%; height: min(62vh, 560px); min-height: 340px; }
+.legend { font-size: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.lg { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: -6px; }
+.lg.run { background: var(--info); } .lg.ok { background: var(--ok); } .lg.warn { background: var(--warn); } .lg.bad { background: var(--bad); }

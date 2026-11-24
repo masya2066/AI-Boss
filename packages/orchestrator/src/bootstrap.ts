@@ -22,12 +22,12 @@ export async function bootstrap(o: { runner?: AgentRunner; workerId?: string; lo
   const dataDir = resolve(process.env.DEVPILOT_DATA_DIR ?? join(process.cwd(), '.devpilot'));
   const store = await openStore({ databaseUrl: process.env.DATABASE_URL, fallbackFile: join(dataDir, 'state.json') });
   // The runner needs a policy for tool permissions; it is re-resolved per project below.
-  const runner =
+  const runner: AgentRunner =
     o.runner ??
     ({
       run: async (req) => {
         const project = await store.getProject((await store.getTask(req.taskId))!.projectId);
-        const policy = loadPolicy(project?.policyPath, DEFAULT_POLICIES_DIR);
+        const policy = project ? orchestrator.policyFor(project) : loadPolicy(undefined, DEFAULT_POLICIES_DIR);
         // Default: your Claude subscription via the official CLI. `agents.auth: api` switches to the Agent SDK + API key.
         const r =
           policy.project.agents.auth === 'subscription'
@@ -36,6 +36,6 @@ export async function bootstrap(o: { runner?: AgentRunner; workerId?: string; lo
         return r.run(req);
       },
     } satisfies AgentRunner);
-  const orchestrator = new Orchestrator({ store, runner, dataDir, workerId: o.workerId, log: o.log });
+  const orchestrator: Orchestrator = new Orchestrator({ store, runner, dataDir, workerId: o.workerId, log: o.log });
   return { store, orchestrator, dataDir };
 }

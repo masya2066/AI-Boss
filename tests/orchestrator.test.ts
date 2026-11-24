@@ -75,11 +75,12 @@ test('blocking review finding sends the task back to repair', async () => {
 });
 
 test('required gate without a command is NOT_VERIFIED and blocks delivery', async () => {
-  const { orch } = await setup(baseHandlers(), POLICY.replace(/  unit_tests: .*\n/, ''));
+  // Nothing to detect for integration tests, and the project YAML makes them required.
+  const { orch } = await setup(baseHandlers(), POLICY.replace('integration_tests: off', 'integration_tests: required'));
   const t = await orch.run((await orch.createTask({ projectId: 'sample', prompt: 'Add subtract' })).id);
   assert.equal(t.state, 'BLOCKED');
-  assert.equal(t.gates.unit_tests!.status, 'not_verified');
-  assert.match(t.stopReason!, /cannot verify required gates: unit_tests/);
+  assert.equal(t.gates.integration_tests!.status, 'not_verified');
+  assert.match(t.stopReason!, /cannot verify required gates: integration_tests/);
 });
 
 test('QA skipping tests is caught by the integrity gate', async () => {

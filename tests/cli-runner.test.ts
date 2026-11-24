@@ -8,7 +8,7 @@ import { POLICY, makeRepo } from './helpers';
 
 const FAKE = join(import.meta.dirname, 'fixtures/fake-claude.mjs');
 // Test knobs for the fake binary must be passed through explicitly - everything else is scrubbed.
-const env = makeRepo(POLICY.replace('execution: { agent_sandbox: false }', 'execution: { agent_sandbox: false, env_passthrough: [FAKE_KEY_SOURCE, FAKE_RATE_LIMIT, ANTHROPIC_API_KEY] }'));
+const env = makeRepo(POLICY.replace('execution: { agent_sandbox: false, mode: pipeline }', 'execution: { agent_sandbox: false, mode: pipeline, env_passthrough: [FAKE_KEY_SOURCE, FAKE_RATE_LIMIT, ANTHROPIC_API_KEY] }'));
 const runner = new ClaudeCliRunner({ policy: loadPolicy(env.policyPath), policyPath: env.policyPath, agentsDir: AGENTS_DIR, claudeBin: FAKE });
 const req = (o = {}) => ({ role: 'researcher' as const, taskId: 'T', prompt: 'look around', cwd: env.repo, schema: DiscoveryOutput, model: 'claude-opus-5-5', effort: 'high' as const, maxTurns: 5, budgetUsd: 1, timeoutMs: 60_000, ...o });
 

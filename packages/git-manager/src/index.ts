@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, isAbsolute, join } from 'node:path';
 import { promisify } from 'node:util';
 import { DevPilotError } from '@devpilot/shared';
 
@@ -30,6 +30,27 @@ export class GitManager {
 
   async resolve(ref: string) {
     return git(this.repoPath, ['rev-parse', ref]);
+  }
+
+  /**
+   * Keep setup/test byproducts (.venv, node_modules, caches) out of DevPilot's commits
+   * without touching the repo's tracked .gitignore: a marked block in the shared
+   * info/exclude, which every worktree honours. Only affects untracked files.
+   */
+  async ensureExcludes(patterns: string[]) {
+    if (!patterns.length) return;
+    let common = await git(this.repoPath, ['rev-parse', '--git-common-dir']);
+    if (!isAbsolute(common)) common = join(this.repoPath, common);
+    const file = join(common, 'info', 'exclude');
+    const cur = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const begin = '# >>> devpilot (generated, safe to delete)';
+    const end = '# <<< devpilot';
+    const block = `${begin}\n${patterns.join('\n')}\n${end}\n`;
+    const re = new RegExp(`${begin.replace(/[()]/g, '\\$&')}[\\s\\S]*?${end}\\n?`);
+    const next = re.test(cur) ? cur.replace(re, block) : `${cur}${cur && !cur.endsWith('\n') ? '\n' : ''}${block}`;
+    if (next === cur) return;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, next);
   }
 
   /** Idempotent: re-attaches to an existing worktree after a crash. */

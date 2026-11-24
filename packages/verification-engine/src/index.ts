@@ -223,12 +223,17 @@ export async function verify(ctx: VerifyContext): Promise<VerifyOutcome> {
     });
   }
 
-  // --- independent_review: carried over only if it was for this very commit -----------
+  // --- independent_review: a PASSED review is carried over only for this very commit -----
+  // A failed one is never carried: after a repair attempt that changed nothing (e.g. the
+  // fixer declared a finding out of scope) the reviewer must look again, otherwise the
+  // stale verdict loops REPAIR -> VALIDATION -> REPAIR without anyone re-judging.
   const ir = planned.get('independent_review');
   if (ir && ir.required) {
     const prev = task.gates.independent_review;
     gates.independent_review =
-      prev && prev.commit === commit ? prev : gate('independent_review', commit, true, { status: 'pending', reason: 'review not yet run for this commit' });
+      prev && prev.commit === commit && prev.status === 'passed'
+        ? prev
+        : gate('independent_review', commit, true, { status: 'pending', reason: prev?.commit === commit ? 'previous review failed: re-review' : 'review not yet run for this commit' });
   }
 
   const defects: Defect[] = Object.values(gates)

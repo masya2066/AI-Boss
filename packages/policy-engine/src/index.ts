@@ -12,6 +12,7 @@ import {
 } from './schema';
 
 export * from './schema';
+export * from './detect';
 
 export const DEFAULT_POLICIES_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../policies');
 
@@ -71,14 +72,26 @@ export interface LoadedPolicy {
 }
 
 /**
- * Global defaults (policies/quality-gates.yaml, budgets.yaml) <- project YAML.
- * Permissions are global (policies/permissions.yaml) and can't be relaxed per project.
+ * Global defaults (policies/quality-gates.yaml, budgets.yaml) <- detected project
+ * profile (onboarding) <- project YAML. Permissions are global
+ * (policies/permissions.yaml) and can't be relaxed per project.
  */
-export function loadPolicy(projectPolicyPath?: string, policiesDir = DEFAULT_POLICIES_DIR): LoadedPolicy {
+export function loadPolicy(projectPolicyPath?: string, policiesDir = DEFAULT_POLICIES_DIR, detectedPath?: string): LoadedPolicy {
   const gates = readYaml(join(policiesDir, 'quality-gates.yaml'));
   const budgets = readYaml(join(policiesDir, 'budgets.yaml'));
+  const detected = detectedPath && existsSync(detectedPath) ? readYaml(detectedPath) : {};
   const proj = projectPolicyPath ? readYaml(projectPolicyPath) : {};
-  const merged = deepMerge(deepMerge(gates, budgets), proj);
+  // The project's own file wins: a gate it configures (mode or command) drops the detection verdict for it.
+  const pq = (proj.quality ?? {}) as Record<string, unknown>;
+  const pc = (proj.commands ?? {}) as Record<string, unknown>;
+  const dq = { ...((detected.quality ?? {}) as Record<string, unknown>) };
+  const dn = { ...((detected.notes ?? {}) as Record<string, unknown>) };
+  for (const g of new Set([...Object.keys(pq), ...Object.keys(pc)])) {
+    if (g in pc && !(g in pq) && dq[g] === 'off') delete dq[g];
+    delete dn[g];
+  }
+  if (Object.keys(detected).length) Object.assign(detected, { quality: dq, notes: dn });
+  const merged = deepMerge(deepMerge(deepMerge(gates, budgets), detected), proj);
   return {
     project: ProjectPolicySchema.parse(merged),
     permissions: PermissionsSchema.parse(readYaml(join(policiesDir, 'permissions.yaml'))),
@@ -109,7 +122,7 @@ export function planGates(policy: ProjectPolicy, changedFiles: string[]): GatePl
     const collect = typeof rule === 'string' ? [] : (rule.collect ?? []);
     const command = (policy.commands as Record<string, string | undefined>)[name];
     if (mode === 'off') {
-      plans.push({ name, required: false, reason: 'disabled by policy', command, collect });
+      plans.push({ name, required: false, reason: policy.notes[name] ?? 'disabled by policy', command, collect });
       continue;
     }
     if (mode === 'required') {

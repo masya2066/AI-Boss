@@ -1,3 +1,5 @@
+import { createBrain } from './brain.js';
+
 // DevPilot dashboard — plain ES module, no build step. Every status shown here
 // comes from the API (i.e. from the orchestrator's durable state), never computed in the browser.
 
@@ -15,6 +17,8 @@ const ago = (iso) => {
 };
 const state = (s) => `<span class="state ${esc(s)}">${esc(s)}</span>`;
 const FLOW = ['QUEUED', 'DISCOVERY', 'SPECIFICATION', 'IMPACT_ANALYSIS', 'IMPLEMENTATION', 'VALIDATION', 'REVIEW', 'DELIVERY', 'DONE'];
+const FLOW_SOLO = ['QUEUED', 'IMPLEMENTATION', 'VALIDATION', 'REVIEW', 'DELIVERY', 'DONE'];
+const flowOf = (t) => (t.mode === 'solo' && !t.parentId ? FLOW_SOLO : t.subtasks?.length ? FLOW_DAG : FLOW);
 const FLOW_DAG = ['QUEUED', 'DISCOVERY', 'SPECIFICATION', 'IMPACT_ANALYSIS', 'DECOMPOSITION', 'EXECUTING_SUBTASKS', 'VALIDATION', 'REVIEW', 'DELIVERY', 'DONE'];
 
 // ------------------------------------------------------------------- API ----
@@ -89,7 +93,7 @@ async function viewTasks() {
 
 async function viewTask(id) {
   const [{ task: t, agentRuns, children }, events] = await Promise.all([api(`/tasks/${id}`), api(`/tasks/${id}/events`)]);
-  const flow = t.subtasks?.length ? FLOW_DAG : FLOW;
+  const flow = flowOf(t);
   const reached = new Set(events.filter((e) => e.type === 'state_changed').map((e) => e.data.to));
   const gates = Object.values(t.gates);
   const kids = new Map(children.map((c) => [c.id, c]));
@@ -98,7 +102,7 @@ async function viewTask(id) {
   if (t.state === 'BLOCKED') actions.push('resume');
   if (!['DONE', 'FAILED', 'CANCELLED'].includes(t.state)) actions.push('cancel');
   $view.innerHTML = `
-    <p><a href="#/">← задачи</a>${t.parentId ? ` · подзадача ${esc(t.subtaskKey)} задачи <a href="#/tasks/${esc(t.parentId)}">${esc(t.parentId)}</a>` : ''}</p>
+    <p><a href="#/tasks">← задачи</a>${t.parentId ? ` · подзадача ${esc(t.subtaskKey)} задачи <a href="#/tasks/${esc(t.parentId)}">${esc(t.parentId)}</a>` : ''}</p>
     <div class="row"><h1>${esc(t.title)}</h1>${state(t.state)}</div>
     <div class="muted">${esc(t.id)} · ${esc(t.projectId)} · ветка <code>${esc(t.branch || '—')}</code> · HEAD <code>${esc((t.headCommit || '').slice(0, 8))}</code> · ${money(t.costUsd)}${t.complexity ? ` · сложность ${t.complexity.score}` : ''}${t.prUrl ? ` · <a href="${esc(t.prUrl)}" target="_blank" rel="noopener">PR</a>` : ''}${t.reportPath ? ` · <a href="#/report/${esc(t.id)}">отчёт</a>` : ''}</div>
     <div class="flow">${flow.map((s) => `<span class="${s === t.state ? 'now' : reached.has(s) ? 'done' : ''}">${s}</span>`).join('')}</div>
@@ -140,6 +144,138 @@ function summarize(e) {
     case 'ci_polled': return `CI: ${d.state}`;
     default: return Object.keys(d).length ? JSON.stringify(d).slice(0, 160) : '';
   }
+}
+
+// ------------------------------------------------------------- live view ----
+const ROLE_RU = { researcher: 'исследователь', architect: 'архитектор', developer: 'разработчик', qa: 'тестировщик', reviewer: 'ревьюер', fixer: 'исправляющий', integrator: 'интегратор' };
+const STAGE_RU = { QUEUED: 'очередь', DISCOVERY: 'исследование', SPECIFICATION: 'спецификация', IMPACT_ANALYSIS: 'анализ влияния', DECOMPOSITION: 'разбиение', EXECUTING_SUBTASKS: 'подзадачи', IMPLEMENTATION: 'код', VALIDATION: 'проверки', REVIEW: 'ревью', REPAIR: 'исправление', DELIVERY: 'сдача', DONE: 'готово', AWAITING_APPROVAL: 'ждёт решения', BLOCKED: 'остановлено', FAILED: 'ошибка', CANCELLED: 'отменено' };
+const TOOL_RU = { Read: 'читает', Edit: 'правит', Write: 'пишет', MultiEdit: 'правит', Bash: 'запускает', Grep: 'ищет', Glob: 'ищет файлы', LS: 'смотрит', WebFetch: 'читает страницу', TodoWrite: 'планирует' };
+const TERMINAL = ['DONE', 'FAILED', 'CANCELLED'];
+const tone = (st) => (st === 'DONE' ? 'ok' : ['BLOCKED', 'FAILED'].includes(st) ? 'bad' : st === 'AWAITING_APPROVAL' ? 'warn' : st === 'CANCELLED' ? 'idle' : 'run');
+const short = (s, n) => (s && s.length > n ? `${s.slice(0, n - 1)}…` : s || '');
+const mins = (ms) => (ms == null ? '—' : ms < 60_000 ? `${Math.round(ms / 1000)} с` : `${Math.round(ms / 60_000)} мин`);
+const act = (a) => (a ? `${esc(TOOL_RU[a.tool] || a.tool)} <code>${esc(short(a.target || '', 90))}</code>` : '');
+
+/** Subtask DAG as SVG: columns = dependency depth, last column = integration of the whole. */
+function dagSvg(t, kids, running, lastActivity) {
+  const subs = t.subtasks || [];
+  const by = new Map(subs.map((s) => [s.key, s]));
+  const depth = new Map();
+  const lvl = (k, seen = new Set()) => {
+    if (depth.has(k)) return depth.get(k);
+    if (seen.has(k)) return 0;
+    seen.add(k);
+    const d = Math.max(-1, ...(by.get(k)?.dependsOn || []).map((x) => lvl(x, seen))) + 1;
+    depth.set(k, d);
+    return d;
+  };
+  subs.forEach((s) => lvl(s.key));
+  const cols = [];
+  subs.forEach((s) => (cols[depth.get(s.key)] ||= []).push(s));
+  const W = 210, H = 70, GX = 56, GY = 18, PAD = 8;
+  const rows = Math.max(1, ...cols.map((c) => c.length));
+  const width = PAD * 2 + (cols.length + 1) * W + cols.length * GX;
+  const height = PAD * 2 + rows * H + (rows - 1) * GY;
+  const pos = new Map();
+  cols.forEach((c, i) => c.forEach((s, j) => pos.set(s.key, { x: PAD + i * (W + GX), y: PAD + j * (H + GY) + ((rows - c.length) * (H + GY)) / 2 })));
+  const fin = { x: PAD + cols.length * (W + GX), y: PAD + ((rows - 1) * (H + GY)) / 2 };
+  const leaves = subs.filter((s) => !subs.some((o) => o.dependsOn.includes(s.key)));
+  const edge = (a, b, done) => {
+    const x1 = a.x + W, y1 = a.y + H / 2, x2 = b.x, y2 = b.y + H / 2, mx = (x1 + x2) / 2;
+    return `<path class="edge ${done ? 'done' : ''}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 6},${y2}" marker-end="url(#arr)"/>`;
+  };
+  const node = (x, y, title, sub, st, extra, href) => `
+    <g class="node ${tone(st)}" ${href ? `data-href="${esc(href)}"` : ''} transform="translate(${x},${y})">
+      <rect width="${W}" height="${H}" rx="10"/>
+      ${tone(st) === 'run' && st !== 'QUEUED' ? `<circle class="pulse" cx="${W - 14}" cy="14" r="4"/>` : ''}
+      <text x="12" y="22" class="t1">${esc(short(title, 26))}</text>
+      <text x="12" y="41" class="t2">${esc(short(sub, 32))}</text>
+      <text x="12" y="58" class="t3">${esc(short(extra, 34))}</text>
+    </g>`;
+  let out = '';
+  for (const s of subs) for (const d of s.dependsOn) out += edge(pos.get(d), pos.get(s.key), !!by.get(d)?.integratedCommit);
+  for (const s of leaves) out += edge(pos.get(s.key), fin, !!s.integratedCommit);
+  for (const s of subs) {
+    const c = kids.get(s.taskId);
+    const st = c ? c.state : 'QUEUED';
+    const r = running.find((x) => x.taskId === s.taskId);
+    const a = lastActivity[s.taskId];
+    const extra = s.integratedCommit ? `влито ${s.integratedCommit.slice(0, 7)}` : r ? `${ROLE_RU[r.role] || r.role}${a ? ': ' + (TOOL_RU[a.tool] || a.tool) + ' ' + (a.target || '').split('/').pop() : ''}` : c ? STAGE_RU[st] || st : s.dependsOn.length ? `ждёт ${s.dependsOn.join(', ')}` : 'в очереди';
+    const p = pos.get(s.key);
+    out += node(p.x, p.y, `${s.key} · ${s.title}`, c ? `${STAGE_RU[st] || st} · ${money(c.costUsd)}` : 'не начата', st, extra, c ? `#/tasks/${c.id}` : '');
+  }
+  const integrated = subs.length && subs.every((s) => s.integratedCommit);
+  const finState = TERMINAL.includes(t.state) || t.state === 'BLOCKED' ? t.state : integrated ? t.state : 'QUEUED';
+  out += node(fin.x, fin.y, 'Сборка целиком', integrated ? STAGE_RU[t.state] || t.state : `влито ${subs.filter((s) => s.integratedCommit).length}/${subs.length}`, finState, 'проверки + ревью всего', '');
+  return `<div class="dag"><svg viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="Граф подзадач">
+    <defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="arrowhead"/></marker></defs>${out}</svg></div>`;
+}
+
+function stageTrack(t, reached) {
+  const flow = flowOf(t);
+  const detour = ['REPAIR', 'AWAITING_APPROVAL', 'BLOCKED'].includes(t.state) ? t.state : null;
+  // furthest stage reached on the main path (the feed is only the recent tail)
+  const at = Math.max(flow.indexOf(t.state), ...[...reached].map((x) => flow.indexOf(x)));
+  return `<div class="track">${flow
+    .map((s, i) => `<span class="${s === t.state ? 'now' : i < at || reached.has(s) ? 'done' : ''}">${esc(STAGE_RU[s] || s)}</span>`)
+    .join('<i></i>')}${detour ? `<span class="now ${tone(detour)}">${esc(STAGE_RU[detour])}</span>` : ''}</div>`;
+}
+
+function feedLine(e, keys) {
+  const d = e.data || {};
+  const who = keys.get(e.taskId) || 'задача';
+  const time = `<time>${esc(new Date(e.ts).toLocaleTimeString())}</time>`;
+  if (e.type === 'agent_activity') return `<li class="act">${time}<b>${esc(who)}</b> ${esc(ROLE_RU[d.role] || d.role)} ${act(d)}</li>`;
+  if (e.type === 'state_changed') return `<li class="st">${time}<b>${esc(who)}</b> ${esc(STAGE_RU[d.from] || d.from)} → <b>${esc(STAGE_RU[d.to] || d.to)}</b>${d.reason ? ` <span class="muted">${esc(short(d.reason, 90))}</span>` : ''}</li>`;
+  if (e.type === 'subtask_integrated') return `<li class="st">${time}<b>${esc(who)}</b> подзадача ${esc(d.key)} влита${d.conflicts ? `, конфликтов: ${esc(d.conflicts)}` : ''}</li>`;
+  if (e.type === 'gates_evaluated') return `<li class="st">${time}<b>${esc(who)}</b> проверки: ${esc(summarize(e))}</li>`;
+  if (e.type === 'review_recorded') return `<li class="st">${time}<b>${esc(who)}</b> ревью: ${esc(d.status)}${d.blocking ? `, блокирующих ${d.blocking}` : ''}</li>`;
+  return `<li>${time}<b>${esc(who)}</b> ${esc(e.type)}</li>`;
+}
+
+let brain = null;
+async function viewLive() {
+  const live = await api('/live');
+  const { tasks } = live;
+  // The brain canvas persists across refreshes (its animation is the point); only the cards re-render.
+  if (!brain?.alive || !document.getElementById('brain')) {
+    $view.innerHTML = `<div class="row"><h1 style="flex:1">Сейчас</h1><span class="muted legend"><i class="lg run"></i>работает <i class="lg ok"></i>готово <i class="lg warn"></i>ждёт решения <i class="lg bad"></i>остановлено</span></div>
+      <div class="card brainwrap"><canvas id="brain" aria-label="Живая схема: оркестратор, задачи, подзадачи и агенты"></canvas></div><div id="live-cards"></div>`;
+    brain = createBrain(document.getElementById('brain'), { onOpen: (href) => (location.hash = href) });
+  }
+  brain.update(live);
+  const $cards = document.getElementById('live-cards');
+  if (!tasks.length) {
+    $cards.innerHTML = `<div class="card empty" style="margin-top:16px">Сейчас ничего не выполняется. Запустите задачу из <a href="#/tasks">списка задач</a> или командой <code>npm run cli -- run &lt;project&gt; "…"</code>. Здесь появится её живой ход.</div>`;
+    return;
+  }
+  $cards.innerHTML = `${tasks
+    .map(({ task: t, children, running, agentRuns, lastActivity, feed }) => {
+      const kids = new Map(children.map((c) => [c.id, c]));
+      const keys = new Map([[t.id, 'задача'], ...children.map((c) => [c.id, c.subtaskKey || c.id])]);
+      const live = running.filter((r) => { const owner = r.taskId === t.id ? t : kids.get(r.taskId); return owner && !TERMINAL.includes(owner.state) && !['AWAITING_APPROVAL', 'BLOCKED'].includes(owner.state); });
+      const reached = new Set(feed.filter((e) => e.type === 'state_changed' && e.taskId === t.id).map((e) => e.data.to));
+      const cost = t.costUsd + children.reduce((a, c) => a + c.costUsd, 0);
+      const active = (t.activeMs || 0) + children.reduce((a, c) => a + (c.activeMs || 0), 0);
+      return `<section class="card livecard ${tone(t.state)}">
+        <div class="row"><a href="#/tasks/${esc(t.id)}"><h2 style="margin:0">${esc(t.title)}</h2></a>${state(t.state)}</div>
+        <div class="muted">${esc(t.projectId)} · ${esc(t.id)} · работа ${mins(active)} · ${money(cost)} · запусков агентов ${agentRuns}${t.subtasks?.length ? ` · подзадач ${t.subtasks.length}` : ''}</div>
+        ${stageTrack(t, reached)}
+        ${t.state === 'AWAITING_APPROVAL' && t.approval ? `<div class="card approval"><b>${esc(t.approval.reason)}</b> — <a href="#/tasks/${esc(t.id)}">ответить</a></div>` : ''}
+        ${t.state === 'BLOCKED' ? `<div class="card approval"><b>Остановлено:</b> ${esc(t.stopReason)}</div>` : ''}
+        ${t.subtasks?.length ? dagSvg(t, kids, live, lastActivity) : ''}
+        <div class="cols">
+          <div><h3>Агенты сейчас</h3>${
+            live.length
+              ? `<ul class="agents">${live.map((r) => { const a = lastActivity[r.taskId]; return `<li><span class="dot"></span><b>${esc(ROLE_RU[r.role] || r.role)}</b> · ${esc(keys.get(r.taskId))} <span class="muted">${esc(r.model || '')} · ${ago(r.startedAt)}</span>${a ? `<div class="muted">${act(a)} · ${ago(a.ts)}</div>` : ''}</li>`; }).join('')}</ul>`
+              : `<p class="muted">${TERMINAL.includes(t.state) ? 'Задача завершена.' : 'Нет работающих агентов (система проверяет, ждёт или между шагами).'}</p>`
+          }</div>
+          <div><h3>Ход работы</h3><ul class="timeline feed">${feed.slice(0, 40).map((e) => feedLine(e, keys)).join('')}</ul></div>
+        </div>
+      </section>`;
+    })
+    .join('')}`;
+  $cards.querySelectorAll('g[data-href]').forEach((g) => g.addEventListener('click', () => (location.hash = g.dataset.href)));
 }
 
 async function viewApprovals() {
@@ -187,14 +323,15 @@ async function viewReport(id) {
 // --------------------------------------------------------------- router ----
 async function render() {
   const h = location.hash || '#/';
-  document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('active', h === a.getAttribute('href') || (a.dataset.nav === 'tasks' && h.startsWith('#/tasks'))));
+  document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('active', h === a.getAttribute('href') || (a.dataset.nav === 'tasks' && h.startsWith('#/tasks')) || (a.dataset.nav === 'live' && h === '#/')));
   try {
     let m;
     if ((m = h.match(/^#\/tasks\/([\w-]+)/))) await viewTask(m[1]);
+    else if (h === '#/' || h.startsWith('#/live')) await viewLive();
     else if ((m = h.match(/^#\/report\/([\w-]+)/))) await viewReport(m[1]);
     else if (h.startsWith('#/approvals')) await viewApprovals();
     else if (h.startsWith('#/metrics')) await viewMetrics();
-    else await viewTasks();
+    else await viewTasks(); // #/tasks
   } catch (e) {
     $view.innerHTML = `<p class="error">Ошибка: ${esc(e.message)}</p>`;
   }
@@ -220,8 +357,10 @@ function connectLive() {
   es.onerror = () => live.classList.remove('on');
   es.onmessage = (msg) => {
     const e = JSON.parse(msg.data);
+    if (brain?.alive) brain.pulse(e); // signals travel along the branches as events arrive
     const h = location.hash;
-    const relevant = !h.startsWith('#/tasks/') || h.includes(e.taskId) || e.type === 'state_changed';
+    const onLive = h === '#/' || h.startsWith('#/live');
+    const relevant = onLive || !h.startsWith('#/tasks/') || h.includes(e.taskId) || e.type === 'state_changed';
     if (!relevant || document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
     clearTimeout(pending);
     pending = setTimeout(render, 400);
@@ -229,5 +368,10 @@ function connectLive() {
 }
 
 window.addEventListener('hashchange', render);
+// keep "N с назад" honest on the live page even when nothing new happens
+setInterval(() => {
+  const h = location.hash || '#/';
+  if ((h === '#/' || h.startsWith('#/live')) && !document.activeElement?.matches?.('input,textarea')) render();
+}, 5000);
 await render();
 connectLive();

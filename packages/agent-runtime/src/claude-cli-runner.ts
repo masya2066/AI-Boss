@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -7,8 +7,27 @@ import { fileURLToPath } from 'node:url';
 import type { LoadedPolicy } from '@devpilot/policy-engine';
 import { scrubbedEnv } from '@devpilot/sandbox-manager';
 import type { AgentRole } from '@devpilot/shared';
-import type { AgentRequest, AgentResult, AgentRunner } from './runner';
+import { activityOf, type AgentRequest, type AgentResult, type AgentRunner } from './runner';
 import { toOutputSchema } from './schemas';
+
+/** Agents started by this process: they must not outlive it (an orphan would keep editing the worktree). */
+const LIVE = new Set<ChildProcess>();
+let hooked = false;
+function track(child: ChildProcess) {
+  LIVE.add(child);
+  child.once('close', () => LIVE.delete(child));
+  if (hooked) return;
+  hooked = true;
+  const killAll = () => {
+    for (const c of LIVE) c.kill('SIGKILL');
+  };
+  process.once('exit', killAll);
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const)
+    process.once(sig, () => {
+      killAll();
+      if (process.listenerCount(sig) === 0) process.exit(128 + ({ SIGINT: 2, SIGTERM: 15, SIGHUP: 1 } as const)[sig]);
+    });
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '../../..');
@@ -101,6 +120,8 @@ export class ClaudeCliRunner implements AgentRunner {
     let stderr = '';
 
     const child = spawn(bin, args, { cwd: req.cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    track(child);
+    if (req.pidFile && child.pid) writeFileSync(req.pidFile, `${child.pid}\n${bin}\n`);
     child.stdin.end(req.prompt);
     child.stderr.on('data', (c: Buffer) => (stderr = (stderr + c.toString()).slice(-8000)));
     const timer = setTimeout(() => {
@@ -137,7 +158,11 @@ export class ClaudeCliRunner implements AgentRunner {
       }
       if (msg.type === 'assistant') {
         if (msg.error === 'rate_limit' && !rateLimitedUntil) rateLimitedUntil = Date.now() + 15 * 60_000;
-        for (const b of msg.message?.content ?? []) if (b.type === 'tool_use') toolCalls++;
+        for (const b of msg.message?.content ?? [])
+          if (b.type === 'tool_use') {
+            toolCalls++;
+            if (b.name !== 'StructuredOutput') req.onActivity?.(activityOf(b.name, b.input));
+          }
       }
       if (msg.type === 'result') {
         costUsd = msg.total_cost_usd ?? 0;
@@ -151,6 +176,7 @@ export class ClaudeCliRunner implements AgentRunner {
     }
     const code: number | null = await new Promise((r) => (child.exitCode !== null ? r(child.exitCode) : child.on('close', r)));
     clearTimeout(timer);
+    if (req.pidFile) rmSync(req.pidFile, { force: true });
 
     const denied = existsSync(denyLog)
       ? readFileSync(denyLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { tool: string; reason: string })

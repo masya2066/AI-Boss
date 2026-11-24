@@ -67,6 +67,7 @@ Turn the request into numbered requirements (REQ-01, REQ-02, …) with concrete,
 testable acceptance criteria, including negative cases and edge cases.
 Only list an ambiguity as \`blocking: true\` if a wrong guess would make the
 implementation unacceptable to the owner; otherwise record an assumption.
+For every ambiguity give \`proposedDefault\`: the answer you would pick if nobody answers, and why.
 Do not modify any files.`;
 }
 
@@ -85,10 +86,72 @@ ${fence(indexSummary)}
 Determine exactly which modules, files, API endpoints, DB tables/migrations,
 UI components and tests are affected, including consumers of anything you change.
 Produce an ordered implementation plan. Do not modify any files.
-${task.parentId ? 'This is already a subtask: return an empty `subtasks` list.' : `If — and only if — the change is large and splits into parts that can each be implemented AND
-tested on their own, describe them in \`subtasks\` (2–8 parts). Every requirement must belong to a
-subtask; use \`dependsOn\` when a part needs another one's code; list each part's files honestly
-(parts sharing files are run one after another). Otherwise return an empty list.`}`;
+${task.parentId ? 'This is already a subtask: return an empty `subtasks` list.' : SPLIT_RULES}`;
+}
+
+const SPLIT_RULES = `## Splitting into subtasks
+Separate agents will implement subtasks in parallel, each in its own branch, then the
+system merges them and re-verifies the whole. Split when the change spans areas that
+can be built and tested on their own — e.g. backend endpoint + UI screen, a new
+module + its integration points, several independent features in one request, or
+data-model change + the code that uses it (as a dependency). Typical signals:
+6+ files in 2+ modules, or 3+ requirements that touch different code.
+Do NOT split a small or tightly coupled change (one function, one bugfix, a rename).
+
+Rules for \`subtasks\` (2–8 parts, otherwise an empty list):
+- every requirement belongs to at least one subtask (\`requirementIds\`); a requirement may be
+  shared by several parts — then each part's \`description\` states exactly which share it delivers;
+- \`description\` is self-contained: the agent sees only it, the requirements and the plan;
+- \`dependsOn\` when a part needs another part's code (shared types, schema, API contract);
+- \`files\`: the files each part changes, honestly — parts sharing files run one after another.`;
+
+export function splitPrompt(task: Task, score: number, indexSummary: string): string {
+  const impact = task.impact;
+  return `# Task ${task.id}: can this plan be split?
+
+The plan below changes ${impact?.filesToChange.length ?? 0} files and scored ${score} on the system's
+complexity scale, but no subtasks were proposed. Take a second, deliberate look.
+
+## Requirements
+${requirementsBlock(task)}
+## Plan
+${impact?.plan.map((s, i) => `${i + 1}. ${s}`).join('\n') ?? '(none)'}
+
+Files to change: ${impact?.filesToChange.join(', ') || '-'}
+Modules: ${impact?.modules.join(', ') || '-'}
+
+## Project index
+${fence(indexSummary)}
+
+${SPLIT_RULES}
+
+If it genuinely cannot be split, return an empty list and say why in \`reason\`.
+Do not modify any files.`;
+}
+
+export function soloPrompt(task: Task, checks: { name: string; command?: string }[]): string {
+  return `# Task ${task.id}
+
+You are working in an isolated git worktree on branch ${task.branch}. Implement the request
+below completely, in this one session, the way a careful senior engineer would:
+- read the code you need and follow its conventions;
+- write automated tests for every behaviour you add or change — positive, negative and edge
+  cases — in the project's existing test style, where the test command finds them;
+- run the checks below yourself and make them pass before you finish.
+
+Afterwards the system re-runs every check itself and an independent reviewer compares your diff
+with the request. Do not claim success — make it true.
+Rules: do not touch CI config, policy files or secrets; do not delete, skip or weaken existing
+tests; do not push or switch branches.
+
+## Request
+${task.prompt}
+${humanBlock(task)}
+## Checks the system will run
+${checks.map((c) => `- ${c.name}: ${c.command ? `\`${c.command}\`` : '(built-in)'}`).join('\n')}
+
+When done, return the requirements you implemented (REQ-01, REQ-02, …): every behaviour the
+request asks for, each with its acceptance criteria and the test files that prove it.`;
 }
 
 export function developerPrompt(task: Task): string {
@@ -119,7 +182,7 @@ do not delete or skip existing tests; do not push or switch branches.
 You may run the project's build/test commands to check your work.`;
 }
 
-export function qaPrompt(task: Task): string {
+export function qaPrompt(task: Task, testCmd?: string): string {
   return `# Task ${task.id}: tests for the requirements
 
 The implementation for the requirements below is in the working tree. Write
@@ -127,6 +190,7 @@ automated tests that prove each acceptance criterion, including negative and
 edge cases. You may only create or modify test files. If a requirement is not
 actually implemented, write the test anyway — a failing test is the correct
 outcome. Run the tests you wrote.
+${testCmd ? `\nThe project's tests are run with \`${testCmd}\` — put the tests where that command finds them, in the\nproject's existing test style and framework.` : ''}
 
 ## Task
 ${task.prompt}
@@ -139,7 +203,47 @@ Affected existing tests (keep them passing): ${task.impact?.affectedTests.join('
 Return the mapping requirementId -> test files (repo-relative paths).`;
 }
 
-export function reviewerPrompt(task: Task, diffText: string, blastRadius = ''): string {
+/** A subtask is judged and repaired against its own share of shared requirements. */
+function scopeBlock(task: Task, role: 'review' | 'fix'): string {
+  if (!task.parentId) return '';
+  return `
+## Scope: subtask ${task.subtaskKey ?? ''} of ${task.parentId}
+${task.prompt}
+
+The requirements below are shared with the other parts of the parent task, which are
+implemented in separate branches and merged later; the integrated result is verified
+and reviewed again as a whole. ${
+    role === 'review'
+      ? `Judge only the behaviour THIS part is responsible for. Do not report missing
+behaviour that belongs to another part, and list a requirement in \`unmetRequirements\`
+only if this part's share of it is missing or wrong.`
+      : `Fix only what this part is responsible for. If a defect asks for behaviour that
+belongs to another part, do not implement it here (that would collide with that part's
+branch): say so in your summary and leave it.`
+  }
+`;
+}
+
+/**
+ * Severity decides whether the change goes back for a (paid) repair. Measured: an uncalibrated
+ * reviewer blocks on wishes outside the request (e.g. "emails should use the app clock"),
+ * which doubles a task's cost without changing whether it does what was asked.
+ */
+const REVIEW_CALIBRATION = `
+Severity rules — they decide whether the change goes back for another (paid) repair round:
+- blocker/major ONLY for: something the request asks for that is missing or wrong; a bug that
+  breaks requested behaviour; a security problem (authz, injection, data exposure, secrets);
+  data loss or corruption; broken existing behaviour or a broken consumer of changed code;
+  tests that claim to prove a requirement but do not.
+- Everything else is minor/info (advisory, no repair): hardening beyond the request, style,
+  naming, refactoring, performance without a concrete problem, behaviour the request does not
+  mention, pre-existing code the change did not touch.
+- Put a requirement in \`unmetRequirements\` only if the code really fails it.
+Be efficient: the system already ran the checks below — do not re-run the test suite. Read only
+the files you need to judge the diff.
+`;
+
+export function reviewerPrompt(task: Task, diffText: string, blastRadius = '', o: { calibrated?: boolean } = {}): string {
   return `# Task ${task.id}: independent review
 
 You are reviewing someone else's change. You are NOT given the author's reasoning —
@@ -148,7 +252,16 @@ missing edge cases, security issues (authz, injection, data exposure), broken
 consumers, race conditions, missing migrations, tests that don't actually test
 the criteria. Severity: blocker/major = must fix before merge; minor/info = advisory.
 List requirement IDs that are not satisfied in \`unmetRequirements\`.
-
+${o.calibrated === false ? '' : REVIEW_CALIBRATION}
+${scopeBlock(task, 'review')}${
+    task.parentId
+      ? ''
+      : `
+## Original request (the requirements below were derived from it — check the diff against BOTH;
+anything the request asks for that is missing or wrong is a blocker)
+${task.prompt}
+`
+  }
 ## Requirements
 ${requirementsBlock(task)}
 
@@ -171,7 +284,7 @@ export function fixerPrompt(task: Task, defects: Defect[]): string {
 The system ran real checks on the current code and found the defects below.
 Fix the root causes in the code. Do not weaken, skip or delete tests and do not
 change checks/configuration to make them pass — the integrity gate detects that.
-
+${scopeBlock(task, 'fix')}
 ## Open defects
 ${defects
   .map((d) => `### ${d.id} [${d.severity}] ${d.summary}${d.file ? `\n${d.file}${d.line ? ':' + d.line : ''}` : ''}\n${fence(d.details.slice(0, 6000))}`)
@@ -179,7 +292,14 @@ ${defects
 
 ## Requirements (for context)
 ${requirementsBlock(task)}
-${humanBlock(task)}
+${humanBlock(task)}${
+    defects.some((d) => /requirements_coverage/.test(d.summary))
+      ? `
+Requirements coverage failed: write the missing tests (or find the existing tests that already
+prove the requirement) and return every requirement -> test files pair in \`requirementTests\`.
+`
+      : ''
+  }
 After fixing, run the relevant checks yourself to confirm.`;
 }
 

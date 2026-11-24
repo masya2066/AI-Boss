@@ -1,0 +1,45 @@
+name: library-reservations
+# A multi-module change (data, loans, HTTP, notifications, expiry, report) with an exact
+# HTTP contract. Hidden acceptance tests check only this contract, through createApp().
+prompt: |-
+  Добавь в библиотечное приложение резервирование книг (очередь). Существующее поведение не ломай.
+
+  Резерв: { id, bookId, memberId, status, createdAt, position?, heldAt?, expiresAt? },
+  status — одно из: waiting | held | fulfilled | cancelled | expired.
+  Всё время берётся из clock() приложения (createApp({ clock, mailer })), письма уходят через mailer.send.
+
+  HTTP (JSON; ошибки — объект { error }):
+  1. POST /books/:id/reservations, тело { memberId }
+     - 201: созданный резерв со status 'waiting' и position (1 — первый в очереди этой книги).
+     - 404: неизвестная книга или неизвестный участник.
+     - 409: у книги есть свободный экземпляр (его можно взять сразу); у участника уже есть активный
+       (waiting или held) резерв на эту книгу; участник сейчас держит эту книгу на руках (активный займ).
+  2. DELETE /reservations/:id
+     - 200: резерв со status 'cancelled'. Отмена held-резерва сразу передаёт экземпляр следующему
+       в очереди (как при возврате, с письмом), а если очереди нет — экземпляр становится свободным.
+     - 404: неизвестный резерв. 409: резерв уже не активен.
+  3. GET /members/:id/reservations
+     - 200: массив активных (waiting и held) резервов участника; у waiting есть актуальная position,
+       у held — expiresAt. 404: неизвестный участник.
+  4. Возврат книги (POST /loans/:id/return). Если на книгу есть очередь, освободившийся экземпляр
+     удерживается за первым waiting: status 'held', heldAt = now, expiresAt = now + 48 часов, и ему
+     отправляется письмо на email участника, subject содержит название книги. Позиции остальных
+     сдвигаются. Удержанный экземпляр не считается доступным (поле available в GET /books).
+     POST /loans на книгу с удержанием: держатель получает 201 и его резерв становится 'fulfilled';
+     любой другой участник получает 409, если свободных (не удержанных) экземпляров нет.
+  5. Истечение. Удержание истекает, когда now >= expiresAt. Истёкшие удержания обрабатываются в начале
+     обработки любого HTTP-запроса: резерв становится 'expired', экземпляр удерживается за следующим
+     waiting (с письмом и новыми 48 часами от текущего now) или, если очереди нет, становится свободным.
+  6. GET /reports/reservations
+     - 200: { totalActive, books: [{ bookId, title, waiting, held }] } — только книги, у которых есть
+       активные резервы; waiting и held — количества; totalActive — сумма waiting + held по всем книгам.
+
+  Остальные ответы существующих эндпоинтов не меняй (например, POST /loans без свободных экземпляров
+  и без удержания по-прежнему 400 "no copies available"). Покрой всё тестами, линтер должен проходить.
+acceptance: "node --test acceptance/*.test.js"
+policy: |
+  commands:
+    typecheck: "find src -name '*.js' -exec node --check {} +"
+    lint: "npm run lint"
+  quality:
+    lint: required

@@ -14,7 +14,7 @@ import {
  * verifiable facts (gate results bound to a commit), never at agent claims.
  */
 const EDGES: Record<TaskState, TaskState[]> = {
-  QUEUED: ['DISCOVERY', 'IMPACT_ANALYSIS'], // IMPACT_ANALYSIS: subtasks inherit discovery + spec
+  QUEUED: ['DISCOVERY', 'IMPACT_ANALYSIS', 'IMPLEMENTATION'], // IMPACT_ANALYSIS: subtasks inherit discovery + spec; IMPLEMENTATION: solo mode
   DISCOVERY: ['SPECIFICATION'],
   SPECIFICATION: ['IMPACT_ANALYSIS', 'AWAITING_APPROVAL'],
   IMPACT_ANALYSIS: ['IMPLEMENTATION', 'AWAITING_APPROVAL', 'DECOMPOSITION'],
@@ -86,7 +86,8 @@ function guard(task: Task, to: TaskState, ctx: GuardContext): GuardResult {
       if (!task.subtasks?.length || !task.worktreePath) return { ok: false, reason: 'no subtask plan or integration worktree' };
       return { ok: true };
     case 'IMPLEMENTATION':
-      if (task.requirements.length === 0)
+      // Solo: the single session states its requirements together with the tests that prove them.
+      if (task.requirements.length === 0 && !(task.mode === 'solo' && task.state === 'QUEUED'))
         return { ok: false, reason: 'cannot implement without requirements' };
       if (!task.worktreePath) return { ok: false, reason: 'no isolated worktree' };
       return { ok: true };

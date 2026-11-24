@@ -1,0 +1,70 @@
+name: library-platform
+# Six interacting features in one request, each with an exact contract. The hidden tests
+# check every feature AND the interactions between them (where a single pass tends to slip).
+prompt: |-
+  Расширь библиотечное приложение (src/) шестью функциями. Существующее поведение не ломай.
+  Всё время — из clock() приложения (createApp({ clock, mailer })), письма — через mailer.send.
+  Деньги везде в центах (целые числа). Ошибки — JSON { error }. Каждое изменение покрой тестами,
+  `npm test` и `npm run lint` должны проходить.
+
+  ## 1. Тарифы участников
+  POST /members принимает tier: 'basic' | 'premium' (по умолчанию 'basic'; другое значение → 400).
+  basic: не больше 3 активных займов, срок займа 14 дней. premium: 6 займов, 28 дней.
+
+  ## 2. Резервирование (очередь)
+  Резерв: { id, bookId, memberId, status, createdAt, position?, heldAt?, expiresAt? },
+  status: waiting | held | fulfilled | cancelled | expired.
+  - POST /books/:id/reservations { memberId } → 201 резерв 'waiting' с position (1 — первый).
+    404 — неизвестная книга/участник. 409 — есть свободный экземпляр; у участника уже есть активный
+    (waiting/held) резерв на книгу; участник держит эту книгу на руках.
+  - DELETE /reservations/:id → 200 резерв 'cancelled'; отмена held сразу передаёт экземпляр следующему
+    (как при возврате) или освобождает его. 404 — неизвестный, 409 — не активен.
+  - GET /members/:id/reservations → 200 активные резервы участника (waiting с position, held с expiresAt).
+  - При возврате книги с очередью экземпляр удерживается за первым waiting: 'held', heldAt = now,
+    expiresAt = now + 48 ч, письмо участнику (subject содержит название книги). Удержанный экземпляр
+    не считается доступным (available в GET /books). Его может взять только держатель (201, резерв
+    'fulfilled'); остальные — 409, если свободных неудержанных экземпляров нет.
+  - Удержание истекает при now >= expiresAt; истёкшие удержания обрабатываются в начале любого
+    HTTP-запроса: резерв 'expired', экземпляр — следующему waiting (письмо, новые 48 ч) или свободен.
+  - GET /reports/reservations → { totalActive, books: [{ bookId, title, waiting, held }] } — только книги
+    с активными резервами.
+
+  ## 3. Продление займа
+  POST /loans/:id/renew → 200 займ: dueAt сдвигается на срок тарифа участника от текущего dueAt,
+  поле renewals увеличивается (у нового займа renewals = 0). 404 — неизвестный займ.
+  409 — займ уже возвращён; уже было 2 продления; займ просрочен (now > dueAt); на книгу есть хотя бы
+  один waiting-резерв.
+
+  ## 4. Штрафы и оплата
+  При возврате просроченного займа создаётся штраф: 25 центов за каждые начатые сутки просрочки
+  (ceil((returnedAt − dueAt) / 24 ч)), но не больше 1000 центов за займ. Штраф: { id, memberId, loanId,
+  amount, paid: false }. Возврат вовремя (returnedAt <= dueAt) штрафа не создаёт.
+  - GET /members/:id/fines → 200 { fines: [...], balance } — все штрафы участника и сумма неоплаченных.
+  - POST /members/:id/payments { amount } → 200 { balance }. amount — целое > 0 и не больше balance,
+    иначе 400. Оплата гасит неоплаченные штрафы от старых к новым; частично оплаченный штраф уменьшает
+    свой amount (полностью оплаченный — paid: true).
+  - Участник с balance >= 500 не может брать книги (POST /loans → 403), в том числе удержанную за ним,
+    и не может вставать в очередь (POST /books/:id/reservations → 403).
+
+  ## 5. Журнал аудита
+  Каждое успешное изменение пишет запись { seq, at, action, memberId?, bookId?, loanId?, reservationId? }
+  (seq — 1, 2, 3… по порядку). action: book.add, member.add, loan.borrow, loan.return, loan.renew,
+  reservation.create, reservation.cancel, reservation.hold, reservation.expire, reservation.fulfil,
+  fine.create, payment. Системные события (удержание, истечение, штраф, выполнение резерва) пишутся тоже.
+  GET /audit?memberId=&bookId=&action=&after=&limit= → 200 { items, next }: фильтры по равенству,
+  after — вернуть записи с seq > after, по возрастанию seq; limit по умолчанию 50, максимум 200 (больше →
+  200); next — seq последней записи, если есть ещё записи, иначе null.
+
+  ## 6. Поиск книг
+  GET /books по-прежнему возвращает массив (поле available у каждой книги), но принимает параметры:
+  q — подстрока в title или author без учёта регистра; author — точное совпадение без учёта регистра;
+  available=true — только с available > 0; page (с 1, по умолчанию 1) и limit (по умолчанию 20,
+  максимум 100). Порядок — по title (по возрастанию), при равенстве — по id. Заголовок X-Total-Count —
+  число книг после фильтров до пагинации.
+acceptance: "node --test acceptance/*.test.js"
+policy: |
+  commands:
+    typecheck: "find src -name '*.js' -exec node --check {} +"
+    lint: "npm run lint"
+  quality:
+    lint: required

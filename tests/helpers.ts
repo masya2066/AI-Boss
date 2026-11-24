@@ -11,7 +11,7 @@ const sh = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, 
 
 export const POLICY = `
 project: { default_branch: main }
-execution: { agent_sandbox: false }
+execution: { agent_sandbox: false, mode: pipeline }
 commands:
   typecheck: "node --check src/math.js"
   lint: "! grep -rn 'debugger' src"
@@ -92,6 +92,22 @@ export function baseHandlers(over: Partial<Record<AgentRole, ScriptedHandler>> =
     },
     ...over,
   };
+}
+
+/** Solo mode: the developer writes code + tests and reports requirements -> tests. */
+export const SOLO = {
+  title: 'Add subtract',
+  summary: 'subtract with tests',
+  requirements: [{ id: 'REQ-01', description: 'subtract(a, b) returns a - b', acceptanceCriteria: ['subtract(5, 3) === 2'], testFiles: ['tests/subtract.test.js'] }],
+  assumptions: [],
+  filesChanged: ['src/math.js', 'tests/subtract.test.js'],
+};
+export function soloHandlers(over: Partial<Record<AgentRole, ScriptedHandler>> = {}): Partial<Record<AgentRole, ScriptedHandler>> {
+  return baseHandlers({
+    developer: (req) => (writeSubtract(req.cwd), writeSubtractTest(req.cwd), SOLO),
+    fixer: (req) => (writeSubtract(req.cwd), { summary: 'fixed', defectsAddressed: [] }),
+    ...over,
+  });
 }
 
 export async function setup(handlers = baseHandlers(), policy = POLICY, storeFile?: string) {

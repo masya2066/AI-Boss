@@ -17,7 +17,7 @@ const hook = settings.hooks.PreToolUse[0].hooks[0].command;
 const ev = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git push origin HEAD' } });
 const out = execSync(hook, { input: ev, env: process.env }).toString();
 const denied = out.includes('"deny"');
-emit({ type: 'assistant', session_id: sid, message: { content: [{ type: 'tool_use', name: 'Bash', input: {} }] } });
+emit({ type: 'assistant', session_id: sid, message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --grep   booking' } }] } });
 
 if (process.env.FAKE_RATE_LIMIT) {
   emit({ type: 'rate_limit_event', session_id: sid, rate_limit_info: { status: 'rejected', resetsAt: Math.floor(Date.now() / 1000) + 3600, rateLimitType: 'five_hour' } });

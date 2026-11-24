@@ -149,6 +149,8 @@ export interface Task {
   /** Set on subtasks: the parent task that integrates this one. */
   parentId?: string;
   subtaskKey?: string;
+  /** How this task is executed (fixed at creation from execution.mode; subtasks are always pipeline). */
+  mode?: 'solo' | 'pipeline';
   /** Commit to branch from (subtasks start from the parent's integration head). */
   baseRef?: string;
   /** Set on a decomposed parent: the validated subtask graph. */
@@ -198,6 +200,11 @@ export interface Task {
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
+  /**
+   * Time actually spent working on this task (sum of its steps). Waiting for a human,
+   * a usage-limit window, CI, subtasks, or a crashed process does not count.
+   */
+  activeMs?: number;
 }
 
 export interface TaskEvent {

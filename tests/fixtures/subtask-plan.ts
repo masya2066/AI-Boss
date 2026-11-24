@@ -4,7 +4,7 @@ import type { ScriptedHandler } from '@devpilot/agent-runtime';
 import type { AgentRole } from '@devpilot/shared';
 import { POLICY, baseHandlers } from '../helpers';
 
-export const PAR_POLICY = POLICY.replace('execution: { agent_sandbox: false }', 'execution: { agent_sandbox: false, max_parallel_agents: 2 }');
+export const PAR_POLICY = POLICY.replace('execution: { agent_sandbox: false, mode: pipeline }', 'execution: { agent_sandbox: false, mode: pipeline, max_parallel_agents: 2 }');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const reqIds = (prompt: string) => [...new Set([...prompt.matchAll(/- (REQ-\d+):/g)].map((m) => m[1]!))];
 const subKey = (prompt: string) => prompt.match(/subtask (S\d)/)?.[1];

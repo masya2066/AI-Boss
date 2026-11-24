@@ -32,7 +32,14 @@ export const ProjectPolicySchema = z.object({
       container_memory: z.string().default('4g'),
       /** Enable Claude Code's own OS-level sandbox for agent Bash commands. */
       agent_sandbox: z.boolean().default(true),
-      max_parallel_agents: z.number().int().positive().default(1),
+      max_parallel_agents: z.number().int().positive().default(2),
+      /**
+       * solo (default): one developer session does the whole change (code + tests); DevPilot runs
+       * every gate itself, one independent review, and repairs by resuming that same session.
+       * Measured: same quality as a plain Claude Code session at a fraction of the pipeline's cost.
+       * pipeline: researcher -> spec -> impact -> (subtasks) -> developer -> QA -> review.
+       */
+      mode: z.enum(['solo', 'pipeline']).default('solo'),
       /** Env vars passed through to agents/gates. Everything else is scrubbed. */
       env_passthrough: z.array(z.string()).default([]),
     })
@@ -56,6 +63,8 @@ export const ProjectPolicySchema = z.object({
       model: z.string().default('claude-opus-5-5'),
       effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).default('high'),
       models: z.partialRecord(RoleName, z.string()).default({}),
+      /** Per-role effort override (e.g. a cheaper, faster reviewer). */
+      efforts: z.partialRecord(RoleName, z.enum(['low', 'medium', 'high', 'xhigh', 'max'])).default({}),
       max_turns: z.partialRecord(RoleName, z.number().int().positive()).default({}),
       allow_web: z.boolean().default(false),
       /**
@@ -105,6 +114,16 @@ export const ProjectPolicySchema = z.object({
     })
     .prefault({}),
   quality: z.record(z.string(), GateRule).default({}),
+  /** gate -> why it is configured this way (written by project detection; shown as the gate reason). */
+  notes: z.record(z.string(), z.string()).default({}),
+  /** What onboarding detected about the repository (informational + paths never to commit). */
+  detected: z
+    .object({
+      stack: z.array(z.string()).default([]),
+      ignore: z.array(z.string()).default([]),
+      sources: z.record(z.string(), z.string()).default({}),
+    })
+    .prefault({}),
   paths: z
     .object({
       tests: z
@@ -125,6 +144,12 @@ export const ProjectPolicySchema = z.object({
       poll_seconds: z.number().positive().default(10),
       /** Attempts for the integrator agent on one merge conflict. */
       max_conflict_attempts: z.number().int().positive().default(2),
+      /**
+       * If the architect returns no split but the change scores at least this much
+       * (files + dependents + requirements + risk), it is asked once more, explicitly,
+       * whether the plan splits into independent parts. 0 disables the second look.
+       */
+      suggest_above_score: z.number().int().min(0).default(10),
     })
     .prefault({}),
   approval: z
@@ -133,6 +158,12 @@ export const ProjectPolicySchema = z.object({
       spec: z.enum(['auto', 'required']).default('auto'),
       high_risk_changes: z.enum(['auto', 'required']).default('required'),
       before_pr: z.enum(['auto', 'required']).default('auto'),
+      /**
+       * Blocking ambiguities in the spec. ask: stop and ask a human.
+       * assume: continue with the architect's stated default, recorded as an assumption
+       * and listed prominently in the report / PR (for fully unattended runs).
+       */
+      ambiguities: z.enum(['ask', 'assume']).default('ask'),
     })
     .prefault({}),
   delivery: z

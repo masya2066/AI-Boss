@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import type { Task } from '@devpilot/shared';
+const isTerminalState = (s: string) => ['DONE', 'FAILED', 'CANCELLED'].includes(s);
 import { bootstrap } from '@devpilot/orchestrator';
+import { planGates } from '@devpilot/policy-engine';
 import { attachNotifier, notifierConfigFromEnv } from '@devpilot/notifier';
 import { computeMetrics } from '@devpilot/metrics';
 import { affectedTests, buildContext, dataNeighbours, dependents, featureMemory, formatContext, summarize, symbolConsumers } from '@devpilot/project-intelligence';
@@ -9,6 +11,10 @@ import { affectedTests, buildContext, dataNeighbours, dependents, featureMemory,
 const HELP = `devpilot — autonomous development orchestrator (CLI mode, no Redis needed)
 
   project add <id> <repoPath> [--policy <file>] [--branch <name>]
+                                       register any git repo; build/test commands are auto-detected
+  project show <id>                    effective gates and commands (detected <- devpilot.yaml)
+  project check <id> [--adopt]         run the gates on the untouched base branch; --adopt switches
+                                       off gates that already fail there (with the evidence as reason)
   project list
   run <projectId> <prompt...>          create a task and drive it until done / waiting
   continue <taskId>                    keep driving an existing task (crash recovery)
@@ -23,14 +29,18 @@ const HELP = `devpilot — autonomous development orchestrator (CLI mode, no Red
   impact <projectId> <file> [symbol]   consumers, tests and data neighbours of a file / exported symbol
   knowledge <projectId>                delivered features and business rules remembered for the project
   metrics [projectId]                  quality & cost metrics (first-pass, autonomy, coverage, cost/task …)
-  bench [names...] [--modes devpilot,baseline] [--auto-approve <answer>]
+  bench [names...] [--modes devpilot,baseline] [--trials N] [--concurrency N] [--auto-approve <answer>]
                                        control tasks: DevPilot vs plain Claude Code, judged by hidden tests
+
+Live view: run/continue/approve/resume/bench serve the dashboard while they work
+  (http://127.0.0.1:4317/dashboard/#/live, next free port if busy; DEVPILOT_DASHBOARD=0 disables).
+  For a dashboard that stays up between commands: npm run api.
 
 Env: DEVPILOT_DATA_DIR (default ./.devpilot), DATABASE_URL (use PostgreSQL)`;
 
 const { positionals, values } = parseArgs({
   allowPositionals: true,
-  options: { policy: { type: 'string' }, branch: { type: 'string' }, note: { type: 'string' }, modes: { type: 'string' }, 'auto-approve': { type: 'string' }, help: { type: 'boolean', short: 'h' } },
+  options: { trials: { type: 'string' }, concurrency: { type: 'string' }, adopt: { type: 'boolean' }, policy: { type: 'string' }, branch: { type: 'string' }, note: { type: 'string' }, modes: { type: 'string' }, 'auto-approve': { type: 'string' }, help: { type: 'boolean', short: 'h' } },
 });
 const [cmd, ...rest] = positionals;
 if (!cmd || values.help) {
@@ -38,12 +48,52 @@ if (!cmd || values.help) {
   process.exit(0);
 }
 
+const LIVE_CMDS = new Set(['run', 'continue', 'approve', 'resume', 'bench']);
 const { store, orchestrator } = await bootstrap({ workerId: `cli-${process.pid}`, log: (l) => console.log(`\x1b[2m${l}\x1b[0m`) });
+// Live view: every command that drives tasks also serves the dashboard from this very process
+// (same store, events arrive instantly). DEVPILOT_DASHBOARD=0 turns it off.
+let liveServer: { close: () => Promise<unknown> } | undefined;
+if (LIVE_CMDS.has(cmd) && process.env.DEVPILOT_DASHBOARD !== '0') liveServer = await startLive();
+
+async function startLive() {
+  const { buildApi } = await import('../../api/src/app');
+  const { LocalScheduler } = await import('@devpilot/orchestrator');
+  const local = new LocalScheduler(orchestrator, store, () => {});
+  const host = process.env.DEVPILOT_DASHBOARD_HOST ?? '127.0.0.1';
+  const first = Number(process.env.DEVPILOT_DASHBOARD_PORT ?? 4317);
+  for (let port = first; port < first + 10; port++) {
+    const app = buildApi({ orchestrator, schedule: (id) => local.schedule(id), token: process.env.DEVPILOT_API_TOKEN, mode: 'embedded' });
+    try {
+      await app.listen({ port, host });
+      console.log(`\x1b[36mLive: http://${host}:${port}/dashboard/#/live\x1b[0m`);
+      return app;
+    } catch (e: any) {
+      await app.close();
+      if (e.code !== 'EADDRINUSE') throw e;
+    }
+  }
+  console.log('Live view: no free port (set DEVPILOT_DASHBOARD_PORT)');
+  return undefined;
+}
+
 const notify = notifierConfigFromEnv();
 if (notify) attachNotifier(orchestrator, notify, (l) => console.error(l));
 
 const color = (s: string) =>
   ({ passed: '\x1b[32m', failed: '\x1b[31m', not_verified: '\x1b[33m', skipped: '\x1b[2m', pending: '\x1b[36m' })[s] ?? '';
+
+function showPolicy(p: { id: string; repoPath: string; policyPath?: string }) {
+  const pol = orchestrator.policyFor(p as never).project;
+  console.log(`\nStack: ${pol.detected.stack.join(', ') || 'not detected'}`);
+  const cmds = pol.commands as Record<string, string | undefined>;
+  if (cmds.setup) console.log(`  setup              ${cmds.setup}`);
+  for (const g of planGates(pol, [])) {
+    const mode = typeof pol.quality[g.name] === 'string' ? pol.quality[g.name] : (pol.quality[g.name] as { mode: string }).mode;
+    const why = mode === 'off' ? g.reason : (pol.detected.sources[g.name] ?? (g.command ? 'devpilot.yaml' : 'built-in'));
+    const what = g.command ?? (['diff_present', 'test_integrity', 'secrets_scan', 'requirements_coverage', 'independent_review'].includes(g.name) ? '(built-in)' : '\x1b[31mNO COMMAND -> NOT_VERIFIED\x1b[0m');
+    console.log(`  ${g.name.padEnd(18)} ${String(mode).padEnd(11)} ${mode === 'off' ? '' : what}  \x1b[2m${why}\x1b[0m`);
+  }
+}
 
 async function show(t: Task) {
   console.log(`\n${t.id}  ${t.state}  ${t.title}`);
@@ -76,7 +126,9 @@ async function show(t: Task) {
     console.log(`\n  devpilot approve ${t.id} "<your answer>"`);
   }
   if (t.state === 'BLOCKED') console.log(`\nBLOCKED: ${t.stopReason}\n  devpilot resume ${t.id} --note "<what you changed>"`);
-  if (t.pausedUntil && Date.parse(t.pausedUntil) > Date.now()) console.log(`\nPAUSED: subscription usage limit until ${t.pausedUntil}`);
+  if (t.pausedUntil && Date.parse(t.pausedUntil) > Date.now() && t.waitReason !== 'subtasks')
+    console.log(`\nPAUSED (${{ usage_limit: 'subscription usage limit', ci: 'waiting for CI', budget: 'daily budget reached' }[t.waitReason ?? 'usage_limit'] ?? t.waitReason}) until ${t.pausedUntil}`);
+  if (!isTerminalState(t.state) && t.state !== 'AWAITING_APPROVAL' && t.state !== 'BLOCKED') console.log(`\nStill running: devpilot continue ${t.id}`);
   if (t.reportPath) console.log(`\nReport: ${t.reportPath}`);
   if (t.prUrl) console.log(`PR: ${t.prUrl}`);
 }
@@ -88,7 +140,24 @@ try {
         const [, id, repo] = rest;
         if (!id || !repo) throw new Error('usage: project add <id> <repoPath>');
         const p = await orchestrator.registerProject({ id, repoPath: repo, policyPath: values.policy, defaultBranch: values.branch });
-        console.log(`project ${p.id} -> ${p.repoPath} (policy: ${p.policyPath ?? 'defaults'}, base: ${p.defaultBranch})`);
+        console.log(`project ${p.id} -> ${p.repoPath} (policy: ${p.policyPath ?? 'auto-detected'}, base: ${p.defaultBranch})`);
+        showPolicy(p);
+        console.log(`\nNext: devpilot project check ${p.id} --adopt   (verifies the gates on ${p.defaultBranch} before the first task)`);
+      } else if (rest[0] === 'show') {
+        const p = await store.getProject(rest[1] ?? '');
+        if (!p) throw new Error(`unknown project ${rest[1]}`);
+        showPolicy(p);
+      } else if (rest[0] === 'check') {
+        const r = await orchestrator.checkProject(rest[1] ?? '', { adopt: Boolean(values.adopt) });
+        console.log(`\nBaseline ${r.commit.slice(0, 8)} (${r.stack.join(', ') || 'unknown stack'}):`);
+        for (const x of r.results) {
+          console.log(`  ${color(x.status === 'passed' ? 'passed' : 'failed')}${x.status.padEnd(8)}\x1b[0m ${x.name.padEnd(18)} ${x.command}  (${x.seconds}s)`);
+          if (x.status !== 'passed') console.log(x.tail.replace(/^/gm, '      '));
+        }
+        if (r.results.find((x) => x.name === 'setup' && x.status !== 'passed')) console.log('\nSetup failed: fix commands.setup in devpilot.yaml (or the environment) first.');
+        else if (r.adopted.length) console.log(`\nSwitched off (already failing on the base branch): ${r.adopted.join(', ')}`);
+        else if (r.results.some((x) => x.status !== 'passed')) console.log(`\nRe-run with --adopt to switch the failing gates off, or fix them / configure devpilot.yaml.`);
+        else console.log('\nAll gates pass on the base branch: ready for tasks.');
       } else for (const p of await store.listProjects()) console.log(`${p.id}\t${p.repoPath}\t${p.defaultBranch}`);
       break;
     }
@@ -181,10 +250,13 @@ try {
         baseline: claudeBaseline(),
         outDir: join(process.env.DEVPILOT_DATA_DIR ?? '.devpilot', 'bench'),
         autoApprove: values['auto-approve'],
+        trials: Number(values.trials ?? 1),
+        concurrency: Number(values.concurrency ?? 1),
+        orchestrator, // DevPilot runs appear in this process's live dashboard
         log: (l) => console.log(`\x1b[2m${l}\x1b[0m`),
       });
       for (const r of results)
-        console.log(`${r.benchmark.padEnd(16)} ${r.mode.padEnd(9)} ${r.accepted ? 'ACCEPTED' : 'REJECTED'}  hidden ${r.passed}/${r.passed + r.failed}  $${r.costUsd.toFixed(2)}  ${r.minutes.toFixed(1)}min${r.taskState ? '  ' + r.taskState : ''}`);
+        console.log(`${r.benchmark.padEnd(22)} ${r.mode.padEnd(9)} #${r.trial ?? 1} ${r.accepted ? 'ACCEPTED' : 'REJECTED'}  hidden ${r.passed}/${r.passed + r.failed}  $${r.costUsd.toFixed(2)}  ${r.minutes.toFixed(1)}min${r.taskState ? '  ' + r.taskState : ''}${r.error ? '  ' + r.error.slice(0, 120) : ''}`);
       console.log(`\nReport: ${reportPath}`);
       break;
     }
@@ -204,5 +276,6 @@ try {
   console.error(`error: ${e.message}`);
   process.exitCode = 1;
 } finally {
+  await liveServer?.close();
   await store.close();
 }

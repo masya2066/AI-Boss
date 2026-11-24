@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DevPilotError, nowIso, type AgentRun, type Project, type Task, type TaskEvent, type TaskState } from '@devpilot/shared';
 import type { Store } from './store';
@@ -28,13 +28,52 @@ export class MemoryStore implements Store {
     }
   }
   async close() {
-    this.flush();
+    // Every mutation is already on disk. Never write here: a read-only process (e.g. `status`
+    // while a task runs elsewhere) would overwrite newer state with its stale snapshot.
+    this.releaseLock();
+  }
+  private locked = false;
+  /** One writing process per state file (use PostgreSQL for several workers). */
+  private lock() {
+    if (this.locked || !this.filePath) return;
+    const f = `${this.filePath}.lock`;
+    if (existsSync(f)) {
+      const pid = Number(readFileSync(f, 'utf8'));
+      let alive = false;
+      try {
+        if (pid && pid !== process.pid) {
+          process.kill(pid, 0);
+          alive = true;
+        }
+      } catch {
+        /* dead process: stale lock */
+      }
+      if (alive)
+        throw new DevPilotError(
+          `state file ${this.filePath} is being written by another DevPilot process (pid ${pid}); use that process (its dashboard/API) or PostgreSQL for several processes`,
+          'STORE_BUSY',
+        );
+    }
+    mkdirSync(dirname(f), { recursive: true });
+    writeFileSync(f, String(process.pid));
+    this.locked = true;
+    process.once('exit', () => this.releaseLock());
+  }
+  private releaseLock() {
+    if (!this.locked || !this.filePath) return;
+    try {
+      if (Number(readFileSync(`${this.filePath}.lock`, 'utf8')) === process.pid) rmSync(`${this.filePath}.lock`, { force: true });
+    } catch {
+      /* already gone */
+    }
+    this.locked = false;
   }
   private flush() {
     if (!this.filePath) return;
+    this.lock();
     mkdirSync(dirname(this.filePath), { recursive: true });
     const tmp = `${this.filePath}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.s, null, 2));
+    writeFileSync(tmp, JSON.stringify(this.s)); // compact: rewritten on every event
     renameSync(tmp, this.filePath);
   }
   private clone<T>(v: T): T {
