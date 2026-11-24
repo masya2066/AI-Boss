@@ -8,6 +8,7 @@ roles:
   qa:         { tools: [Read, Glob, Grep, Bash, Write, Edit, MultiEdit], write: tests, bash: full }
   developer:  { tools: [Read, Glob, Grep, Bash, Write, Edit, MultiEdit, NotebookEdit, TodoWrite], write: worktree, bash: full }
   fixer:      { tools: [Read, Glob, Grep, Bash, Write, Edit, MultiEdit, NotebookEdit, TodoWrite], write: worktree, bash: full }
+  integrator: { tools: [Read, Glob, Grep, Bash, Write, Edit, MultiEdit], write: worktree, bash: full }
 
 # Agents are orchestrated by DevPilot, not by each other.
 forbidden_tools: [Task, Agent, KillShell, ExitPlanMode, EnterWorktree, ExitWorktree, CronCreate, RemoteTrigger]

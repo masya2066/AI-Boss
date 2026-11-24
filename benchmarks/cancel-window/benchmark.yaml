@@ -1,0 +1,7 @@
+name: cancel-window
+prompt: >-
+  Клиент не может отменить запись менее чем за 12 часов до её начала: в этом случае
+  cancelBooking должен бросать ошибку CancelWindowError (экспортируй класс из src/booking.js).
+  Ровно за 12 часов отменять можно. Уже отменённую запись повторно отменить нельзя — та же ошибка не подходит,
+  нужна AlreadyCancelledError.
+acceptance: "node --test acceptance/*.test.js"

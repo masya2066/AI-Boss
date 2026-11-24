@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DevPilot</title>
+  <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="#/">DevPilot</a>
+    <nav>
+      <a href="#/" data-nav="tasks">Задачи</a>
+      <a href="#/approvals" data-nav="approvals">Решения <span id="approvals-count" class="pill hidden"></span></a>
+      <a href="#/metrics" data-nav="metrics">Метрики</a>
+    </nav>
+    <span id="live" class="live" title="Живое обновление">●</span>
+  </header>
+  <main id="view" aria-live="polite"></main>
+  <dialog id="token-dialog">
+    <form method="dialog">
+      <h2>API-токен</h2>
+      <p class="muted">Сервер требует DEVPILOT_API_TOKEN. Токен хранится только в этом браузере.</p>
+      <input id="token-input" type="password" autocomplete="off" placeholder="токен" required>
+      <menu><button value="ok" class="primary">Сохранить</button></menu>
+    </form>
+  </dialog>
+  <script type="module" src="/dashboard/app.js"></script>
+</body>
+</html>

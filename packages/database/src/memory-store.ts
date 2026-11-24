@@ -9,6 +9,7 @@ interface Snapshot {
   leases: Record<string, { owner: string; expiresAt: number }>;
   events: TaskEvent[];
   agentRuns: Record<string, AgentRun>;
+  knowledge?: Record<string, unknown>;
   seq: number;
 }
 
@@ -100,6 +101,18 @@ export class MemoryStore implements Store {
     return this.s.events.filter((e) => e.taskId === taskId && e.id > afterId).map((e) => this.clone(e));
   }
 
+  async listRecentEvents(afterId: number, limit = 500) {
+    return this.s.events.filter((e) => e.id > afterId).slice(0, limit).map((e) => this.clone(e));
+  }
+  async listEventsForTasks(taskIds: string[], types?: string[]) {
+    const ids = new Set(taskIds);
+    return this.s.events.filter((e) => ids.has(e.taskId) && (!types || types.includes(e.type))).map((e) => this.clone(e));
+  }
+  async listAgentRunsForTasks(taskIds: string[]) {
+    const ids = new Set(taskIds);
+    return Object.values(this.s.agentRuns).filter((r) => ids.has(r.taskId)).map((r) => this.clone(r));
+  }
+
   async saveAgentRun(r: AgentRun) {
     this.s.agentRuns[r.id] = this.clone(r);
     this.flush();
@@ -109,5 +122,14 @@ export class MemoryStore implements Store {
       .filter((r) => r.taskId === taskId)
       .sort((a, b) => a.startedAt.localeCompare(b.startedAt))
       .map((r) => this.clone(r));
+  }
+
+  async getKnowledge<T = unknown>(projectId: string) {
+    const k = this.s.knowledge?.[projectId];
+    return k === undefined ? undefined : (this.clone(k) as T);
+  }
+  async saveKnowledge(projectId: string, doc: unknown) {
+    (this.s.knowledge ??= {})[projectId] = this.clone(doc);
+    this.flush();
   }
 }

@@ -75,7 +75,7 @@ export const writeSubtractTest = (cwd: string) =>
 
 export function baseHandlers(over: Partial<Record<AgentRole, ScriptedHandler>> = {}): Partial<Record<AgentRole, ScriptedHandler>> {
   return {
-    researcher: () => ({ summary: 'math.js exports add; calc.js uses it', relevantFiles: ['src/math.js'], existingPatterns: ['named exports'], risks: [] }),
+    researcher: () => ({ summary: 'math.js exports add; calc.js uses it', relevantFiles: ['src/math.js'], existingPatterns: ['named exports'], risks: [], searchTerms: ['math', 'subtract'] }),
     architect: (req) => (req.prompt.includes(': specification') ? SPEC : IMPACT),
     developer: (req) => {
       writeSubtract(req.cwd);

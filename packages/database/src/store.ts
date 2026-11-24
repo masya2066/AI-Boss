@@ -23,7 +23,15 @@ export interface Store {
 
   appendEvent(taskId: string, type: string, data?: Record<string, unknown>): Promise<void>;
   listEvents(taskId: string, afterId?: number): Promise<TaskEvent[]>;
+  /** Global feed (all tasks) after an event id — for live dashboards / notifiers. */
+  listRecentEvents(afterId: number, limit?: number): Promise<TaskEvent[]>;
+  listEventsForTasks(taskIds: string[], types?: string[]): Promise<TaskEvent[]>;
 
   saveAgentRun(r: AgentRun): Promise<void>;
   listAgentRuns(taskId: string): Promise<AgentRun[]>;
+  listAgentRunsForTasks(taskIds: string[]): Promise<AgentRun[]>;
+
+  /** Project knowledge document (opaque JSON owned by project-intelligence). */
+  getKnowledge<T = unknown>(projectId: string): Promise<T | undefined>;
+  saveKnowledge(projectId: string, doc: unknown): Promise<void>;
 }

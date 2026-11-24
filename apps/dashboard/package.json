@@ -1,0 +1,6 @@
+{
+  "name": "@devpilot/app-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static dashboard served by the DevPilot API at /dashboard/ (no build step)."
+}

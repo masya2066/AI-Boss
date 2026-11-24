@@ -8,6 +8,10 @@ export const TASK_STATES = [
   'DISCOVERY',
   'SPECIFICATION',
   'IMPACT_ANALYSIS',
+  /** Large task: validate the subtask graph and set up integration. */
+  'DECOMPOSITION',
+  /** Parent waits for / integrates subtasks running in their own worktrees. */
+  'EXECUTING_SUBTASKS',
   'IMPLEMENTATION',
   'VALIDATION',
   'REVIEW',
@@ -25,7 +29,7 @@ export const TERMINAL_STATES: readonly TaskState[] = ['DONE', 'FAILED', 'CANCELL
 /** States in which the orchestrator waits for a human and does nothing on its own. */
 export const WAITING_STATES: readonly TaskState[] = ['AWAITING_APPROVAL', 'BLOCKED'];
 
-export type AgentRole = 'researcher' | 'architect' | 'developer' | 'qa' | 'reviewer' | 'fixer';
+export type AgentRole = 'researcher' | 'architect' | 'developer' | 'qa' | 'reviewer' | 'fixer' | 'integrator';
 
 export type GateStatus =
   | 'pending'
@@ -102,6 +106,11 @@ export interface DiscoveryNotes {
   relevantFiles: string[];
   existingPatterns: string[];
   risks: string[];
+  /** Code-level terms (identifiers, English domain words) for deterministic search. */
+  searchTerms: string[];
+  /** Deterministic context built from the index around the task (rendered). */
+  context?: string;
+  contextFiles?: string[];
 }
 
 export interface ImpactAnalysis {
@@ -109,6 +118,8 @@ export interface ImpactAnalysis {
   filesToChange: string[];
   /** Deterministically expanded via the import graph, not by the model. */
   dependentFiles: string[];
+  /** Files sharing tables with the changed code (other consumers of the same entities). */
+  relatedData?: string[];
   affectedTests: string[];
   modules: string[];
   risks: string[];
@@ -118,9 +129,30 @@ export interface ImpactAnalysis {
   touchesPublicApi: boolean;
 }
 
+export interface Subtask {
+  key: string;
+  title: string;
+  description: string;
+  requirementIds: string[];
+  /** Files the architect expects this part to change (used to detect overlap). */
+  files: string[];
+  dependsOn: string[];
+  taskId?: string;
+  /** Commit on the parent's integration branch after merging this subtask. */
+  integratedCommit?: string;
+  conflicts?: string[];
+}
+
 export interface Task {
   id: string;
   projectId: string;
+  /** Set on subtasks: the parent task that integrates this one. */
+  parentId?: string;
+  subtaskKey?: string;
+  /** Commit to branch from (subtasks start from the parent's integration head). */
+  baseRef?: string;
+  /** Set on a decomposed parent: the validated subtask graph. */
+  subtasks?: Subtask[];
   title: string;
   prompt: string;
   state: TaskState;
@@ -156,7 +188,9 @@ export interface Task {
   /** Subscription usage limit hit: no step runs before this instant (ISO). State is kept. */
   pausedUntil?: string;
   /** Why the task is paused: subscription usage limit or waiting for CI. */
-  waitReason?: 'usage_limit' | 'ci';
+  waitReason?: 'usage_limit' | 'ci' | 'subtasks' | 'budget';
+  /** Deterministic complexity estimate (after impact analysis), drives model routing. */
+  complexity?: { score: number; tier?: string; factors: Record<string, number> };
   /** Why the task is BLOCKED / FAILED. */
   stopReason?: string;
   prUrl?: string;

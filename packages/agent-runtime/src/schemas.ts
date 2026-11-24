@@ -11,6 +11,9 @@ export const DiscoveryOutput = z.object({
   relevantFiles: z.array(z.string()).describe('Repo-relative paths that matter for this task'),
   existingPatterns: z.array(z.string()).describe('Conventions / existing implementations to reuse'),
   risks: z.array(z.string()),
+  searchTerms: z
+    .array(z.string())
+    .describe('Identifiers and English domain words as they appear in this codebase (e.g. "booking", "cancelBooking", "reservations"), used for exhaustive code search'),
 });
 
 export const SpecOutput = z.object({
@@ -37,6 +40,19 @@ export const ImpactOutput = z.object({
   touchesDatabase: z.boolean(),
   touchesAuth: z.boolean(),
   touchesPublicApi: z.boolean(),
+  subtasks: z
+    .array(
+      z.object({
+        key: z.string().describe('Short id: S1, S2, …'),
+        title: z.string(),
+        description: z.string().describe('What exactly to implement in this part, self-contained'),
+        requirementIds: z.array(z.string()),
+        files: z.array(z.string()).describe('Files this part is expected to change'),
+        dependsOn: z.array(z.string()).describe('Keys of subtasks that must be integrated first'),
+      }),
+    )
+    .default([])
+    .describe('Leave EMPTY unless the change is large and splits into parts that can be implemented and tested independently'),
 });
 
 export const DeveloperOutput = z.object({
@@ -65,6 +81,11 @@ export const ReviewOutput = z.object({
   unmetRequirements: z.array(z.string()).describe('IDs of requirements the code does not satisfy'),
 });
 
+export const IntegratorOutput = z.object({
+  summary: z.string(),
+  resolvedFiles: z.array(z.string()),
+});
+
 export const FixerOutput = z.object({
   summary: z.string(),
   defectsAddressed: z.array(z.string()).describe('Defect IDs you attempted to fix'),
@@ -77,6 +98,7 @@ export type DeveloperOutput = z.infer<typeof DeveloperOutput>;
 export type QaOutput = z.infer<typeof QaOutput>;
 export type ReviewOutput = z.infer<typeof ReviewOutput>;
 export type FixerOutput = z.infer<typeof FixerOutput>;
+export type IntegratorOutput = z.infer<typeof IntegratorOutput>;
 
 /** JSON Schema for Claude Code structured output (without the `$schema` meta key it rejects). */
 export function toOutputSchema(schema: z.ZodType): Record<string, unknown> {

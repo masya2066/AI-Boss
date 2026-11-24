@@ -4,6 +4,7 @@ import { PgStore } from '@devpilot/database';
 import { Orchestrator, enqueueStep, redisConnection, startWorker } from '@devpilot/orchestrator';
 import { ScriptedAgentRunner } from '@devpilot/agent-runtime';
 import { baseHandlers, makeRepo } from './helpers';
+import { PAR_POLICY, handlers as planHandlers } from './fixtures/subtask-plan';
 
 const db = process.env.DATABASE_URL;
 const redis = process.env.REDIS_URL;
@@ -56,6 +57,31 @@ test('worker crash mid-step: lease expires, a second worker recovers the task to
   } finally {
     connA.disconnect();
     connB.disconnect();
+    await store.close();
+  }
+});
+
+test('worker mode: a decomposed task runs its subtasks as separate queue jobs and finishes', { skip: !(db && redis) && 'DATABASE_URL / REDIS_URL not set', timeout: 120_000 }, async () => {
+  const store = new PgStore(db!);
+  await store.init();
+  const conn = redisConnection(redis);
+  const env = makeRepo(PAR_POLICY);
+  try {
+    const queueName = `devpilot-test-dag-${Date.now()}`;
+    const orch = new Orchestrator({ store, runner: new ScriptedAgentRunner(planHandlers()), dataDir: env.dataDir, workerId: 'dag-worker', leaseMs: 5000 });
+    const projectId = `dag-${Date.now()}`;
+    await orch.registerProject({ id: projectId, repoPath: env.repo, policyPath: env.policyPath });
+    const task = await orch.createTask({ projectId, prompt: 'Math v2' });
+    const W = await startWorker({ orchestrator: orch, store, connection: conn, recover: false, concurrency: 3, busyRetryMs: 300, queueName });
+    await enqueueStep(W.queue, task.id, task.version);
+    await waitFor(async () => ['DONE', 'BLOCKED', 'FAILED'].includes((await store.getTask(task.id))!.state), 110_000);
+    const t = (await store.getTask(task.id))!;
+    assert.equal(t.state, 'DONE', t.stopReason ?? '');
+    assert.ok(t.subtasks!.every((s) => s.integratedCommit));
+    await W.queue.obliterate({ force: true }).catch(() => {});
+    await W.close();
+  } finally {
+    conn.disconnect();
     await store.close();
   }
 });

@@ -21,6 +21,9 @@ test('PostgreSQL store: full task lifecycle, optimistic locking, leases, immutab
     assert.ok((await store.listEvents(t.id)).length > 10);
     assert.equal((await store.listAgentRuns(t.id)).length, 6);
 
+    // knowledge recorded on DONE lives in PostgreSQL too
+    const k = await store.getKnowledge<{ features: { taskId: string }[] }>(projectId);
+    assert.equal(k?.features[0]?.taskId, t.id);
     // stale write is rejected
     await assert.rejects(store.saveTask(t, t.version - 1), /version conflict/);
     // lease is exclusive

@@ -1,4 +1,4 @@
-import type { AgentRun, Task } from '@devpilot/shared';
+import type { AgentRun, Subtask, Task } from '@devpilot/shared';
 import type { FileChange } from '@devpilot/git-manager';
 
 const icon: Record<string, string> = {
@@ -10,7 +10,7 @@ const icon: Record<string, string> = {
 };
 
 /** Evidence-based delivery report: every status here comes from the verification engine. */
-export function renderReport(task: Task, runs: AgentRun[], changes: FileChange[]): string {
+export function renderReport(task: Task, runs: AgentRun[], changes: FileChange[], subtasks: (Subtask & { child?: Task })[] = []): string {
   const gates = Object.values(task.gates);
   const required = gates.filter((g) => g.required);
   const passed = required.filter((g) => g.status === 'passed' && g.commit === task.headCommit);
@@ -32,6 +32,12 @@ export function renderReport(task: Task, runs: AgentRun[], changes: FileChange[]
   if (task.assumptions.length) {
     lines.push('', '## Assumptions');
     for (const a of task.assumptions) lines.push(`- ${a}`);
+  }
+  if (subtasks.length) {
+    lines.push('', '## Subtasks (parallel worktrees, integrated into this branch)');
+    lines.push('| Key | Task | State | Depends on | Requirements | Integrated | Conflicts | Cost |', '|---|---|---|---|---|---|---|---|');
+    for (const s of subtasks)
+      lines.push(`| ${s.key} | ${s.child?.id ?? '-'} ${s.title} | ${s.child?.state ?? 'not started'} | ${s.dependsOn.join(', ') || '-'} | ${s.requirementIds.join(', ')} | ${s.integratedCommit ? `\`${s.integratedCommit.slice(0, 8)}\`` : '-'} | ${s.conflicts?.join(', ') || '-'} | $${(s.child?.costUsd ?? 0).toFixed(2)} |`);
   }
   lines.push('', '## Quality gates (evaluated by DevPilot, not by the agent)');
   lines.push('| Gate | Required | Status | Commit | Duration | Note |', '|---|---|---|---|---|---|');

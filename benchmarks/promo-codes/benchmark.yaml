@@ -1,0 +1,8 @@
+name: promo-codes
+prompt: >-
+  Добавь промокоды в src/cart.js: функция applyPromo(cart, promo, now) возвращает новую корзину со скидкой.
+  promo = { code, percent, maxUses, used, expiresAt, productIds? }. Скидка в процентах применяется только к
+  позициям из productIds (если productIds не задан — ко всем). Истёкший промокод (now > expiresAt) — ошибка
+  PromoExpiredError, исчерпанный (used >= maxUses) — PromoLimitError, если ни одна позиция не подходит —
+  PromoNotApplicableError. Суммы округлять до копеек. Исходную корзину не менять.
+acceptance: "node --test acceptance/*.test.js"

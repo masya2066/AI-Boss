@@ -185,3 +185,46 @@ export async function failedCheckLog(cwd: string, link?: string): Promise<string
   const out = r.code === 0 ? r.stdout : r.stderr;
   return out.length > 12000 ? '…' + out.slice(-12000) : out;
 }
+
+// --- integration of parallel branches -------------------------------------------
+export interface MergeResult {
+  ok: boolean;
+  head: string;
+  conflicts: string[];
+}
+
+/** Merge `branch` into the worktree's branch. On conflict the merge is left in progress. */
+export async function mergeBranch(worktree: string, branch: string, message: string): Promise<MergeResult> {
+  try {
+    await pexec('git', ['merge', '--no-ff', '-m', message, branch], { cwd: worktree, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    return { ok: true, head: await head(worktree), conflicts: [] };
+  } catch {
+    const conflicts = (await git(worktree, ['diff', '--name-only', '--diff-filter=U'])).split('\n').filter(Boolean);
+    if (!conflicts.length) throw new DevPilotError(`git merge ${branch} failed without conflicts`, 'GIT_ERROR');
+    return { ok: false, head: await head(worktree), conflicts };
+  }
+}
+
+/** Files that still contain conflict markers. */
+export async function filesWithConflictMarkers(worktree: string, files: string[]): Promise<string[]> {
+  const out: string[] = [];
+  const { readFile } = await import('node:fs/promises');
+  for (const f of files) {
+    try {
+      if (/^(<{7}|={7}|>{7})( |$)/m.test(await readFile(`${worktree}/${f}`, 'utf8'))) out.push(f);
+    } catch {
+      /* deleted in resolution */
+    }
+  }
+  return out;
+}
+
+export async function concludeMerge(worktree: string): Promise<string> {
+  await git(worktree, ['add', '-A']);
+  await git(worktree, ['commit', '-q', '--no-verify', '--no-edit']);
+  return head(worktree);
+}
+
+export async function abortMerge(worktree: string) {
+  await git(worktree, ['merge', '--abort'], { allowFail: true });
+}

@@ -14,7 +14,7 @@ const GateRule = z.union([
 ]);
 export type GateRule = z.infer<typeof GateRule>;
 
-const RoleName = z.enum(['researcher', 'architect', 'developer', 'qa', 'reviewer', 'fixer']);
+const RoleName = z.enum(['researcher', 'architect', 'developer', 'qa', 'reviewer', 'fixer', 'integrator']);
 
 export const ProjectPolicySchema = z.object({
   project: z
@@ -45,6 +45,8 @@ export const ProjectPolicySchema = z.object({
       /** Stop after N repair attempts in a row without reducing open defects. */
       max_no_progress_attempts: z.number().int().positive().default(3),
       max_task_cost_usd: z.number().positive().default(20),
+      /** Project-wide spend per calendar day; when reached, tasks pause until midnight. */
+      max_daily_cost_usd: z.number().positive().optional(),
       max_duration_minutes: z.number().positive().default(90),
       gate_timeout_seconds: z.number().positive().default(900),
     })
@@ -56,6 +58,26 @@ export const ProjectPolicySchema = z.object({
       models: z.partialRecord(RoleName, z.string()).default({}),
       max_turns: z.partialRecord(RoleName, z.number().int().positive()).default({}),
       allow_web: z.boolean().default(false),
+      /**
+       * Model/effort by task complexity (deterministic score after impact analysis).
+       * Off by default: DevPilot never picks a cheaper model unless you configure it.
+       */
+      routing: z
+        .object({
+          enabled: z.boolean().default(false),
+          tiers: z
+            .array(z.object({ name: z.string(), max_score: z.number().optional(), model: z.string(), effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']) }))
+            .default([
+              { name: 'small', max_score: 4, model: 'claude-sonnet-5-5', effort: 'medium' },
+              { name: 'medium', max_score: 10, model: 'claude-opus-5-5', effort: 'high' },
+              { name: 'large', model: 'claude-opus-5-5', effort: 'xhigh' },
+            ]),
+          /** Roles that always use the top tier (judgement-heavy). */
+          top_tier_roles: z.array(z.string()).default(['architect', 'reviewer']),
+          /** Move the fixer one tier up after this many repair attempts. */
+          escalate_fixer_after: z.number().int().nonnegative().default(2),
+        })
+        .prefault({}),
       /**
        * subscription: run the official `claude` CLI headless (`claude -p`) with your
        *   Claude Pro/Max login (or CLAUDE_CODE_OAUTH_TOKEN from `claude setup-token`).
@@ -92,6 +114,17 @@ export const ProjectPolicySchema = z.object({
         .array(z.string())
         .default(['devpilot.yaml', '.devpilot/**', '.github/workflows/**', '.env', '.env.*', '*.pem', '*.key', '.git/**']),
       high_risk: z.array(z.string()).default(['migrations/**', '**/migrations/**', '**/auth/**', '**/*.sql']),
+    })
+    .prefault({}),
+  /** Splitting large tasks into parallel subtasks (stage 4). */
+  decomposition: z
+    .object({
+      enabled: z.boolean().default(true),
+      max_subtasks: z.number().int().min(2).default(8),
+      /** How often the parent checks on its subtasks. */
+      poll_seconds: z.number().positive().default(10),
+      /** Attempts for the integrator agent on one merge conflict. */
+      max_conflict_attempts: z.number().int().positive().default(2),
     })
     .prefault({}),
   approval: z

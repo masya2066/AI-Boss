@@ -4,7 +4,7 @@ import type { TaskState } from '@devpilot/shared';
 import type { Orchestrator } from './orchestrator';
 import { QUEUE_NAME, enqueueStep } from './queue';
 
-const ACTIVE: TaskState[] = ['QUEUED', 'DISCOVERY', 'SPECIFICATION', 'IMPACT_ANALYSIS', 'IMPLEMENTATION', 'VALIDATION', 'REVIEW', 'REPAIR', 'DELIVERY'];
+const ACTIVE: TaskState[] = ['QUEUED', 'DISCOVERY', 'SPECIFICATION', 'IMPACT_ANALYSIS', 'DECOMPOSITION', 'EXECUTING_SUBTASKS', 'IMPLEMENTATION', 'VALIDATION', 'REVIEW', 'REPAIR', 'DELIVERY'];
 
 export interface WorkerHandle {
   queue: Queue;
@@ -34,6 +34,11 @@ export async function startWorker(o: {
   const log = o.log ?? (() => {});
   const queueName = o.queueName ?? QUEUE_NAME;
   const queue = new Queue(queueName, { connection: o.connection });
+  // New subtasks and parents whose child finished are scheduled immediately.
+  o.orchestrator.setTaskReadyHook(async (id) => {
+    const t = await o.store.getTask(id);
+    if (t) await enqueueStep(queue, id, t.version, 0, `ready${Date.now()}`);
+  });
   const worker = new Worker(
     queueName,
     async (job) => {

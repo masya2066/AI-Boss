@@ -28,6 +28,6 @@ emit({
   type: 'result', subtype: 'success', is_error: false, session_id: sid, total_cost_usd: 0.12, num_turns: 3, result: 'done',
   structured_output: {
     summary: `apiKey=${process.env.ANTHROPIC_API_KEY ? 'LEAKED' : 'absent'} hookDenied=${denied} resume=${arg('--resume') ?? '-'} promptLen=${prompt.length}`,
-    relevantFiles: [], existingPatterns: [], risks: [],
+    relevantFiles: [], existingPatterns: [], risks: [], searchTerms: [],
   },
 });

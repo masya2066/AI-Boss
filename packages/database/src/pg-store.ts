@@ -116,6 +116,20 @@ export class PgStore implements Store {
     );
   }
 
+  private rowToEvent = (x: any): TaskEvent => ({ id: Number(x.id), taskId: x.task_id, ts: new Date(x.ts).toISOString(), type: x.type, data: x.data });
+  async listRecentEvents(afterId: number, limit = 500) {
+    const r = await this.pool.query('SELECT * FROM task_events WHERE id>$1 ORDER BY id LIMIT $2', [afterId, limit]);
+    return r.rows.map(this.rowToEvent);
+  }
+  async listEventsForTasks(taskIds: string[], types?: string[]) {
+    const r = await this.pool.query('SELECT * FROM task_events WHERE task_id = ANY($1) AND ($2::text[] IS NULL OR type = ANY($2)) ORDER BY id', [taskIds, types ?? null]);
+    return r.rows.map(this.rowToEvent);
+  }
+  async listAgentRunsForTasks(taskIds: string[]) {
+    const r = await this.pool.query<{ doc: AgentRun }>('SELECT doc FROM agent_runs WHERE task_id = ANY($1) ORDER BY started_at', [taskIds]);
+    return r.rows.map((x) => x.doc);
+  }
+
   async saveAgentRun(run: AgentRun) {
     await this.pool.query(
       `INSERT INTO agent_runs(id, task_id, role, status, session_id, doc, started_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -126,5 +140,17 @@ export class PgStore implements Store {
   async listAgentRuns(taskId: string) {
     const r = await this.pool.query<{ doc: AgentRun }>('SELECT doc FROM agent_runs WHERE task_id=$1 ORDER BY started_at', [taskId]);
     return r.rows.map((x) => x.doc);
+  }
+
+  async getKnowledge<T = unknown>(projectId: string) {
+    const r = await this.pool.query<{ doc: T }>('SELECT doc FROM project_knowledge WHERE project_id=$1', [projectId]);
+    return r.rows[0]?.doc;
+  }
+  async saveKnowledge(projectId: string, doc: unknown) {
+    await this.pool.query(
+      `INSERT INTO project_knowledge(project_id, doc, updated_at) VALUES ($1,$2,now())
+       ON CONFLICT (project_id) DO UPDATE SET doc=EXCLUDED.doc, updated_at=now()`,
+      [projectId, doc],
+    );
   }
 }

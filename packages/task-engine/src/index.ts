@@ -14,10 +14,12 @@ import {
  * verifiable facts (gate results bound to a commit), never at agent claims.
  */
 const EDGES: Record<TaskState, TaskState[]> = {
-  QUEUED: ['DISCOVERY'],
+  QUEUED: ['DISCOVERY', 'IMPACT_ANALYSIS'], // IMPACT_ANALYSIS: subtasks inherit discovery + spec
   DISCOVERY: ['SPECIFICATION'],
   SPECIFICATION: ['IMPACT_ANALYSIS', 'AWAITING_APPROVAL'],
-  IMPACT_ANALYSIS: ['IMPLEMENTATION', 'AWAITING_APPROVAL'],
+  IMPACT_ANALYSIS: ['IMPLEMENTATION', 'AWAITING_APPROVAL', 'DECOMPOSITION'],
+  DECOMPOSITION: ['EXECUTING_SUBTASKS'],
+  EXECUTING_SUBTASKS: ['VALIDATION'],
   IMPLEMENTATION: ['VALIDATION'],
   VALIDATION: ['REVIEW', 'REPAIR', 'DELIVERY'],
   REVIEW: ['DELIVERY', 'REPAIR'],
@@ -27,11 +29,12 @@ const EDGES: Record<TaskState, TaskState[]> = {
     'SPECIFICATION',
     'IMPACT_ANALYSIS',
     'IMPLEMENTATION',
+    'DECOMPOSITION',
     'VALIDATION',
     'REPAIR',
     'DELIVERY',
   ],
-  BLOCKED: ['REPAIR', 'VALIDATION', 'IMPLEMENTATION', 'SPECIFICATION'],
+  BLOCKED: ['REPAIR', 'VALIDATION', 'IMPLEMENTATION', 'SPECIFICATION', 'EXECUTING_SUBTASKS'],
   DONE: [],
   FAILED: [],
   CANCELLED: [],
@@ -71,6 +74,17 @@ export function allRequiredGatesPassed(
 
 function guard(task: Task, to: TaskState, ctx: GuardContext): GuardResult {
   switch (to) {
+    case 'IMPACT_ANALYSIS':
+      if (task.state === 'QUEUED' && (!task.parentId || task.requirements.length === 0))
+        return { ok: false, reason: 'only subtasks with inherited requirements may skip discovery' };
+      return { ok: true };
+    case 'DECOMPOSITION':
+      if (task.parentId) return { ok: false, reason: 'subtasks cannot be decomposed further' };
+      if (!task.subtasks || task.subtasks.length < 2) return { ok: false, reason: 'decomposition needs at least 2 subtasks' };
+      return { ok: true };
+    case 'EXECUTING_SUBTASKS':
+      if (!task.subtasks?.length || !task.worktreePath) return { ok: false, reason: 'no subtask plan or integration worktree' };
+      return { ok: true };
     case 'IMPLEMENTATION':
       if (task.requirements.length === 0)
         return { ok: false, reason: 'cannot implement without requirements' };
