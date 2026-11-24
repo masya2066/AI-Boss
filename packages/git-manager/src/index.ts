@@ -6,6 +6,10 @@ import { DevPilotError } from '@devpilot/shared';
 
 const pexec = promisify(execFile);
 
+/** DevPilot's commit identity, passed per command: `git config` in a worktree writes the repo's shared
+ *  .git/config and would re-author every human commit in the repository. */
+const IDENTITY = ['-c', 'user.name=DevPilot', '-c', 'user.email=devpilot@localhost'];
+
 export async function git(cwd: string, args: string[], opts: { allowFail?: boolean } = {}): Promise<string> {
   try {
     const { stdout } = await pexec('git', args, { cwd, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
@@ -65,8 +69,6 @@ export class GitManager {
     const baseCommit = await this.resolve(baseRef);
     const branchExists = (await git(this.repoPath, ['branch', '--list', branch])) !== '';
     await git(this.repoPath, branchExists ? ['worktree', 'add', path, branch] : ['worktree', 'add', '-b', branch, path, baseCommit]);
-    await git(path, ['config', 'user.name', 'DevPilot']);
-    await git(path, ['config', 'user.email', 'devpilot@localhost']);
     return { path, branch, baseCommit };
   }
 
@@ -84,7 +86,7 @@ export async function commitAll(worktree: string, message: string): Promise<{ he
   await git(worktree, ['add', '-A']);
   const staged = await git(worktree, ['diff', '--cached', '--name-only']);
   if (!staged) return { head: await head(worktree), committed: false };
-  await git(worktree, ['commit', '-q', '--no-verify', '-m', message]);
+  await git(worktree, [...IDENTITY, 'commit', '-q', '--no-verify', '-m', message]);
   return { head: await head(worktree), committed: true };
 }
 
@@ -217,7 +219,7 @@ export interface MergeResult {
 /** Merge `branch` into the worktree's branch. On conflict the merge is left in progress. */
 export async function mergeBranch(worktree: string, branch: string, message: string): Promise<MergeResult> {
   try {
-    await pexec('git', ['merge', '--no-ff', '-m', message, branch], { cwd: worktree, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+    await pexec('git', [...IDENTITY, 'merge', '--no-ff', '-m', message, branch], { cwd: worktree, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
     return { ok: true, head: await head(worktree), conflicts: [] };
   } catch {
     const conflicts = (await git(worktree, ['diff', '--name-only', '--diff-filter=U'])).split('\n').filter(Boolean);
@@ -242,7 +244,7 @@ export async function filesWithConflictMarkers(worktree: string, files: string[]
 
 export async function concludeMerge(worktree: string): Promise<string> {
   await git(worktree, ['add', '-A']);
-  await git(worktree, ['commit', '-q', '--no-verify', '--no-edit']);
+  await git(worktree, [...IDENTITY, 'commit', '-q', '--no-verify', '--no-edit']);
   return head(worktree);
 }
 

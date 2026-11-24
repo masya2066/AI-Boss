@@ -374,3 +374,18 @@ test('no-behaviour change (formatting): proved by gate:lint instead of a new tes
   const firstCoverage = (await e2.store.listEvents(t2.id)).find((x: any) => x.type === 'gates_evaluated')!;
   assert.equal((firstCoverage.data as any).gates.requirements_coverage.status, 'failed');
 });
+
+test('agent commits never touch the repo identity: humans keep their own author, DevPilot commits as DevPilot', async () => {
+  const { GitManager, commitAll } = await import('@devpilot/git-manager');
+  const { root, repo } = makeRepo();
+  const sh = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8' }).trim();
+  const wt = await new GitManager(repo, join(root, 'wt')).ensureWorktree('TASK-ID', 'main');
+  writeFileSync(join(wt.path, 'x.txt'), 'x\n');
+  await commitAll(wt.path, 'agent change');
+  assert.equal(sh(wt.path, 'log', '-1', '--format=%an <%ae>'), 'DevPilot <devpilot@localhost>');
+  assert.equal(sh(repo, 'config', 'user.name'), 't'); // the human's identity in the shared .git/config
+  writeFileSync(join(repo, 'y.txt'), 'y\n');
+  sh(repo, 'add', '-A');
+  sh(repo, 'commit', '-qm', 'human change');
+  assert.equal(sh(repo, 'log', '-1', '--format=%an'), 't');
+});
