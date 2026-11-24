@@ -86,11 +86,14 @@ export function loadPolicy(projectPolicyPath?: string, policiesDir = DEFAULT_POL
   const pc = (proj.commands ?? {}) as Record<string, unknown>;
   const dq = { ...((detected.quality ?? {}) as Record<string, unknown>) };
   const dn = { ...((detected.notes ?? {}) as Record<string, unknown>) };
+  const dd = { ...((detected.detected ?? {}) as Record<string, unknown>) };
+  const ds = { ...((dd.sources ?? {}) as Record<string, unknown>) };
   for (const g of new Set([...Object.keys(pq), ...Object.keys(pc)])) {
     if (g in pc && !(g in pq) && dq[g] === 'off') delete dq[g];
+    if (g in pc) delete ds[g]; // the command now comes from devpilot.yaml, not from detection
     delete dn[g];
   }
-  if (Object.keys(detected).length) Object.assign(detected, { quality: dq, notes: dn });
+  if (Object.keys(detected).length) Object.assign(detected, { quality: dq, notes: dn, detected: { ...dd, sources: ds } });
   const merged = deepMerge(deepMerge(deepMerge(gates, budgets), detected), proj);
   return {
     project: ProjectPolicySchema.parse(merged),

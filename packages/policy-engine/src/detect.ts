@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -38,10 +38,57 @@ function readJson(p: string): any {
 }
 const read = (p: string) => (existsSync(p) ? readFileSync(p, 'utf8') : '');
 
+interface StackScan {
+  stack: string[];
+  cmd: Partial<Record<Cmd, string>>;
+  sources: Record<string, string>;
+  quality: Record<string, unknown>;
+  ignore: Set<string>;
+}
+
+/**
+ * Monorepos (no manifest at the root, e.g. backend/ in Go + web/ in Next.js): every top-level
+ * directory with its own stack is detected separately and the commands are chained per gate
+ * (`(cd backend && go test ./...) && (cd web && npm run test)`). A root Makefile, if it has the
+ * target, is the project's own contract and wins over the synthesized chain.
+ */
 export function detectProject(repo: string): DetectedProfile {
+  let scan = scanStacks(repo);
+  let monorepo = false;
+  if (!scan.stack.length) {
+    const subs = readdirSync(repo)
+      .filter((d) => !d.startsWith('.') && !['node_modules', 'vendor', 'dist', 'build', 'target', 'docs'].includes(d))
+      .filter((d) => {
+        try {
+          return statSync(join(repo, d)).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+      .sort()
+      .map((d) => ({ d, s: scanStacks(join(repo, d)) }))
+      .filter((x) => x.s.stack.length);
+    if (subs.length) {
+      monorepo = true;
+      const merged: StackScan = { stack: [], cmd: {}, sources: {}, quality: {}, ignore: new Set() };
+      for (const { d, s } of subs) {
+        merged.stack.push(...s.stack.map((x) => `${d}/: ${x}`));
+        for (const [k, v] of Object.entries(s.cmd) as [Cmd, string][]) {
+          merged.cmd[k] = [merged.cmd[k], `(cd ${d} && ${v})`].filter(Boolean).join(' && ');
+          merged.sources[k] = [merged.sources[k], `${d}/: ${s.sources[k]}`].filter(Boolean).join('; ');
+        }
+        Object.assign(merged.quality, s.quality);
+        s.ignore.forEach((i) => merged.ignore.add(i));
+      }
+      scan = merged;
+    }
+  }
+  return finalize(repo, scan, monorepo);
+}
+
+function scanStacks(repo: string): StackScan {
   const has = (...f: string[]) => f.some((x) => existsSync(join(repo, x)));
   const cmd: Partial<Record<Cmd, string>> = {};
-  const notes: Record<string, string> = {};
   const sources: Record<string, string> = {};
   const stack: string[] = [];
   const ignore = new Set<string>();
@@ -167,13 +214,24 @@ export function detectProject(repo: string): DetectedProfile {
     ignore.add('target/');
   }
 
-  // --- Makefile as the project's own contract (fills gaps only) ---------------------
+  return { stack, cmd, sources, quality, ignore };
+}
+
+function finalize(repo: string, scan: StackScan, monorepo: boolean): DetectedProfile {
+  const { stack, cmd, sources, quality, ignore } = scan;
+  const notes: Record<string, string> = {};
+  // --- Makefile as the project's own contract: fills gaps; in a monorepo it wins ----------
   const mk = read(join(repo, 'Makefile'));
   if (mk) {
     const target = (t: string) => new RegExp(`^${t}\\s*:`, 'm').test(mk);
-    if (target('test')) set('unit_tests', 'make test', 'Makefile target "test"');
-    if (target('lint')) set('lint', 'make lint', 'Makefile target "lint"');
-    if (target('typecheck')) set('typecheck', 'make typecheck', 'Makefile target "typecheck"');
+    const use = (k: Cmd, t: string) => {
+      if (!target(t) || (cmd[k] && !monorepo)) return;
+      cmd[k] = `make ${t}`;
+      sources[k] = `Makefile target "${t}"`;
+    };
+    use('unit_tests', 'test');
+    use('lint', 'lint');
+    use('typecheck', 'typecheck');
     if (!stack.length) stack.push('make');
   }
 

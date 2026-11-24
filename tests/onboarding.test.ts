@@ -329,3 +329,48 @@ test('reviewer: calibrated severity rules; per-role model and effort are honoure
   assert.match(review.prompt, /blocker\/major ONLY for/);
   assert.match(review.prompt, /do not re-run the test suite/);
 });
+
+test('detection: monorepo with backend/ (Go) and web/ (Node) chains per-directory commands; root Makefile wins', () => {
+  const d = dir({
+    'backend/go.mod': 'module x\n',
+    'web/package.json': JSON.stringify({ scripts: { typecheck: 'tsc --noEmit', test: 'node --test' } }),
+    'web/package-lock.json': '{}',
+    'docs/readme.md': '# not a stack',
+  });
+  const p = detectProject(d);
+  assert.deepEqual(p.stack, ['backend/: go', 'web/: node (npm)']);
+  assert.equal(p.commands.setup, '(cd backend && go mod download) && (cd web && npm ci --no-audit --no-fund)');
+  assert.equal(p.commands.typecheck, '(cd backend && go vet ./...) && (cd web && npm run typecheck)');
+  assert.equal(p.commands.unit_tests, '(cd backend && go test ./...) && (cd web && npm run test)');
+  writeFileSync(join(d, 'Makefile'), 'test: test-backend test-web\n\ntest-backend:\n\tgo test ./...\n');
+  assert.equal(detectProject(d).commands.unit_tests, 'make test', 'the project’s own contract wins in a monorepo');
+  const pol = loadPolicy(undefined, undefined, undefined).project;
+  assert.ok(pol);
+});
+
+test('no-behaviour change (formatting): proved by gate:lint instead of a new test; behaviour gates cannot be claimed', async () => {
+  const fmt = (cwd: string) => writeFileSync(join(cwd, 'src/math.js'), 'export function add(a, b) {\n    return a + b;\n}\n');
+  const SOLO_FMT = { title: 'format math.js', summary: 'reindent only', requirements: [{ id: 'REQ-01', description: 'math.js is formatted; behaviour unchanged', acceptanceCriteria: ['lint passes'], testFiles: ['gate:lint'] }] };
+  const e = await setup(soloHandlers({ developer: (req) => (fmt(req.cwd), SOLO_FMT) }), SOLO_POLICY);
+  const t = await e.orch.run((await e.orch.createTask({ projectId: 'sample', prompt: 'Reindent src/math.js, no behaviour change' })).id);
+  assert.equal(t.state, 'DONE', t.stopReason ?? '');
+  assert.equal(t.repairAttempts, 0, 'no repair round just to invent a test');
+  assert.equal(t.requirements[0]!.status, 'verified');
+  assert.match(t.gates.requirements_coverage!.outputTail ?? '', /no behaviour change, proved by gate:lint/);
+  const review = e.runner.calls.find((c) => c.role === 'reviewer')!;
+  assert.match(review.prompt, /claim the change has NO behaviour/);
+
+  // unit_tests is a behaviour gate: claiming it as proof is refused
+  const e2 = await setup(
+    soloHandlers({
+      developer: (req) => (writeSubtract(req.cwd), { ...SOLO, requirements: [{ ...SOLO.requirements[0]!, testFiles: ['gate:unit_tests'] }] }),
+      fixer: (req) => (writeSubtractTest(req.cwd), { summary: 'real test', defectsAddressed: [], requirementTests: [{ requirementId: 'REQ-01', testFiles: ['tests/subtract.test.js'] }] }),
+    }),
+    SOLO_POLICY,
+  );
+  const t2 = await e2.orch.run((await e2.orch.createTask({ projectId: 'sample', prompt: 'Add subtract' })).id);
+  assert.equal(t2.state, 'DONE', t2.stopReason ?? '');
+  assert.equal(t2.repairAttempts, 1, 'gate:unit_tests was refused, the repair added a real test');
+  const firstCoverage = (await e2.store.listEvents(t2.id)).find((x: any) => x.type === 'gates_evaluated')!;
+  assert.equal((firstCoverage.data as any).gates.requirements_coverage.status, 'failed');
+});

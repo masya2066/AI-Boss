@@ -199,7 +199,25 @@ export async function verify(ctx: VerifyContext): Promise<VerifyOutcome> {
     const unitOk = gates.unit_tests?.status === 'passed';
     const lines: string[] = [];
     for (const r of requirements) {
-      const existing = r.tests.filter((t) => existsSync(join(worktree, t)));
+      // A requirement with no behaviour (formatting, docs, config) may be proved by a deterministic
+      // gate instead of a test: "gate:lint". Only non-behavioural gates qualify, the gate must be
+      // required and have passed on this very commit, and the reviewer is told to reject the claim
+      // if the diff changes behaviour.
+      const gateRefs = r.tests.filter((t) => t.startsWith('gate:'));
+      if (gateRefs.length && gateRefs.length === r.tests.length) {
+        const bad = gateRefs.filter((t) => {
+          const g = gates[t.slice(5)];
+          return !NO_BEHAVIOUR_GATES.includes(t.slice(5)) || !g?.required || g.status !== 'passed';
+        });
+        r.status = bad.length ? 'failed' : 'verified';
+        lines.push(
+          bad.length
+            ? `${r.id}: ${bad.join(', ')} cannot prove it (allowed: ${NO_BEHAVIOUR_GATES.map((x) => 'gate:' + x).join(', ')}; must be required and passed)`
+            : `${r.id}: no behaviour change, proved by ${gateRefs.join(', ')}`,
+        );
+        continue;
+      }
+      const existing = r.tests.filter((t) => !t.startsWith('gate:') && existsSync(join(worktree, t)));
       if (existing.length === 0) {
         r.status = 'failed';
         lines.push(`${r.id}: no existing test mapped (${r.tests.join(', ') || 'none'})`);
@@ -255,6 +273,9 @@ export async function verify(ctx: VerifyContext): Promise<VerifyOutcome> {
   );
   return { head: commit, gates, requirements, defects, notVerified, plan };
 }
+
+/** Gates that can prove a requirement with no behaviour (they check form, not behaviour). */
+export const NO_BEHAVIOUR_GATES = ['lint', 'typecheck', 'build'];
 
 export interface ReviewFinding {
   severity: Severity;

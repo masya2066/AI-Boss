@@ -129,6 +129,10 @@ If it genuinely cannot be split, return an empty list and say why in \`reason\`.
 Do not modify any files.`;
 }
 
+const NO_BEHAVIOUR_NOTE = `Requirements with no behaviour change (formatting, comments, docs, config, renames that change
+nothing observable) need no new test: map them to the check that proves them — \`gate:lint\`,
+\`gate:typecheck\` or \`gate:build\` — instead of test files. Behaviour changes always need tests.`;
+
 export function soloPrompt(task: Task, checks: { name: string; command?: string }[]): string {
   return `# Task ${task.id}
 
@@ -151,7 +155,8 @@ ${humanBlock(task)}
 ${checks.map((c) => `- ${c.name}: ${c.command ? `\`${c.command}\`` : '(built-in)'}`).join('\n')}
 
 When done, return the requirements you implemented (REQ-01, REQ-02, …): every behaviour the
-request asks for, each with its acceptance criteria and the test files that prove it.`;
+request asks for, each with its acceptance criteria and the test files that prove it.
+${NO_BEHAVIOUR_NOTE}`;
 }
 
 export function developerPrompt(task: Task): string {
@@ -200,7 +205,8 @@ ${requirementsBlock(task)}
 
 Affected existing tests (keep them passing): ${task.impact?.affectedTests.join(', ') || '-'}
 
-Return the mapping requirementId -> test files (repo-relative paths).`;
+Return the mapping requirementId -> test files (repo-relative paths).
+${NO_BEHAVIOUR_NOTE}`;
 }
 
 /** A subtask is judged and repaired against its own share of shared requirements. */
@@ -264,7 +270,13 @@ ${task.prompt}
   }
 ## Requirements
 ${requirementsBlock(task)}
-
+${
+  task.requirements.some((r) => r.tests.some((t) => t.startsWith('gate:')))
+    ? `Requirements proved by gate:… claim the change has NO behaviour (formatting, docs, config). If the
+diff changes behaviour for such a requirement, that is a blocker: it needs real tests.
+`
+    : ''
+}
 ## Results of deterministic checks (already executed by the system)
 ${gatesBlock(task.gates)}
 
@@ -297,6 +309,7 @@ ${humanBlock(task)}${
       ? `
 Requirements coverage failed: write the missing tests (or find the existing tests that already
 prove the requirement) and return every requirement -> test files pair in \`requirementTests\`.
+${NO_BEHAVIOUR_NOTE}
 `
       : ''
   }
